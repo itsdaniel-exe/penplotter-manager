@@ -1,0 +1,7 @@
+.venv/
+jobs/
+__pycache__/
+*.pyc
+*.log
+*.lnk
+plotter things/RUN PEN PLOTTER/Gcode/
