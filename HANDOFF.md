@@ -70,11 +70,17 @@ executed):
    A proper **re-calibration tool now exists** in the console too, in case the
    machine changes: **Mark corner A** / **Mark corner B** buttons in the Bed & page
    panel (`web/index.html`, `web/app.js`) — jog to one corner, click Mark corner A,
-   jog to the opposite corner, click Mark corner B, width/height fill in
-   automatically from the two marked live positions. No manual arithmetic, no
+   jog to the *diagonally opposite* corner, click Mark corner B, width/height fill
+   in automatically from the two marked live positions. No manual arithmetic, no
    relaying numbers through chat. (First attempt at this was asking the user to
    jog one click at a time and report the reading verbally — user rightly called
    this out as slow and asked for an actual calibration mode instead.)
+   **The user then ran this tool for real and got 195 × 300mm**, independently
+   agreeing with the historical 194.5 × 294.5mm from the old gcode. That is now the
+   default bed size. Since there are no limit switches, keep real pages a few mm
+   inside it; and note a mis-measurement is possible in one specific way — if the
+   belt slips at an end stop while the steppers keep turning, the software keeps
+   counting mm that never happened and the bed reads larger than reality.
 6. **Tiny real test print** — scrap paper on the bed, zero at a safe start position,
    type a couple of words, click **Simulate** first (offline, zero risk), then **Run
    on machine**. Watch closely, ready to hit **Pause**/**Cancel job**.
@@ -88,6 +94,54 @@ against the simulator before touching hardware. The connect banner is also now f
 parsed and logged (soft/hard limits, homing, steps/mm, max travel) instead of just
 its first line — this session confirmed `$100`/`$101` (steps/mm) = 81.800 on both
 axes, deliberately calibrated and consistent, a good sign.
+
+**Orientation — RESOLVED by real test print.** `invert_x=True`, `invert_y=False`
+(and `swap_pen=True`) are now the defaults in `config.py`, `server.py`'s `MachineIn`,
+`web/index.html` and `web/app.js`. Physical facts behind them, confirmed live: the
+UI's right arrow moves the carriage physically **left**, the up arrow moves it
+**toward the operator**, and with these settings a test print came out the right way
+up. Machine zero (`Zero here`) = the **top-right corner of the page**, and the job
+runs from there in +X (physically left) and +Y (physically toward the operator), so
+the paper's far-right corner is where zero belongs. The machine writes relative to
+zero, never relative to the paper — moving the paper after zeroing misplaces the
+text, which caused a "it's not in the corner" scare before it was understood.
+
+**"Could not connect to COM8: Access is denied" — FIXED, root-caused.** Windows
+allows only one open handle per COM port, but every browser tab got its own
+`Session` with its own `GrblStreamer`, and `connect()` in `app.js` replaced
+`state.ws` without closing the old socket — so repeated Connect clicks and stale
+tabs each stranded an open handle, locking the user out of their own machine (hit
+twice this session; four live WS sessions were found open at once the second time).
+Now `_take_port_ownership()`/`_release_port_ownership()` in `server.py` make the
+newest connection the sole owner and close the previous holder (surfaced to the UI
+as `tookOver`), the connect handler drops any stale streamer the session already
+had, the `finally` block releases ownership, and `connect()` closes the previous
+socket first. Verified against handover, same-session reconnect, release, and a
+non-owner attempting to release.
+
+**Homing & position tracking — settled, don't re-litigate.** `$21=0`/`$22=0`: this
+machine has no limit switches, so `$H` can only ever error. The Home button is now
+auto-disabled when the connect banner reports `$22 != 1` (and auto-enabled if it ever
+reports `$22=1`), with the reason logged. A **Go to zero** button replaces it for the
+practical use case (`GrblStreamer.go_to_zero()` — `G90` then `G1 X0 Y0 F3000`; it is
+explicitly *not* homing, just a return to the last `Zero here`).
+
+The user also asked for the position readout to track the gantry being **pushed by
+hand**. This is not possible: the machine is open-loop with no encoders, so neither
+GRBL nor this software has any way to sense uncommanded movement — the position is a
+count of commanded moves, not a measurement. Told the user plainly rather than
+building something that silently lies. Workaround is `Zero here` after any manual
+move. The real fix is hardware: limit switches on each axis (~£5, would also make
+`$H` genuinely work with `$21=1`/`$22=1`) or encoders. **If asked about this again,
+don't try to implement software tracking — it cannot work.**
+
+**Browser cache gotcha — fixed.** `web/app.js` was being served from browser cache
+after edits, so a working fix looked like it silently did nothing (cost real
+debugging time against live hardware). `index()` in `server.py` now stamps
+`/static/app.js?v=<mtime>` into the HTML, so a normal refresh always picks up
+changes. If a frontend change ever *seems* not to apply, verify what's actually
+served (`Invoke-WebRequest http://127.0.0.1:8765/static/app.js`) before assuming the
+logic is wrong.
 
 **Safety note:** real hardware actions (jog, run) are irreversible/physically
 consequential in a way Preview/Simulate are not. Don't auto-pilot through the

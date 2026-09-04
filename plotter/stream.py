@@ -123,8 +123,21 @@ class GrblStreamer:
         self._x, self._y = 0.0, 0.0
 
     def set_zero(self):
-        """Declare the current physical position as (0, 0) without moving."""
+        """Declare the current physical position as (0, 0) without moving.
+
+        On a machine with no limit switches and no encoders this is the only
+        way to establish a reference - including after the gantry has been
+        pushed by hand, which nothing can detect (see go_to_zero)."""
         self._send_and_wait("G92 X0 Y0")
+        self._x, self._y = 0.0, 0.0
+
+    def go_to_zero(self, feed: int = 3000):
+        """Travel back to the current zero. This is NOT homing: there are no
+        switches to seek, so it only returns to wherever set_zero() last
+        declared. If the gantry was moved by hand since, that reference is
+        stale and this will go to the wrong place."""
+        self._send_and_wait("G90")
+        self._send_and_wait(f"G1 X0 Y0 F{feed}")
         self._x, self._y = 0.0, 0.0
 
     def pen_up(self, servo_cmd: str = "M05", servo_value: int = 10):

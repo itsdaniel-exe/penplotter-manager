@@ -22,12 +22,18 @@ plugged in tomorrow, refresh the page so it appears in the port dropdown,
 pick it instead, and every button does the exact same thing against the
 real board — nothing else changes.
 
-The **Bed & page** panel's bed size defaults to 195×295mm, taken from the
-`bounndrycreation1_*.gcode` boundary tests in the old real gcode archive
-(the machine's actual printable area, already found by hand before this
-project existed). If the machine's changed since, jog to one corner and
-click **Mark corner A**, jog to the opposite corner and click **Mark corner
-B** — width/height fill in automatically from the two marked points.
+The **Bed & page** panel's bed size defaults to 195×300mm, measured on the
+real machine by jogging to opposite corners and marking them. That agrees
+with the `bounndrycreation1_*.gcode` boundary tests in the old gcode archive
+(194.5×294.5mm), found by hand before this project existed — two independent
+measurements, so it's trustworthy.
+
+To re-measure (if the machine's rebuilt or re-tensioned): jog to one corner,
+click **Mark corner A**, jog to the diagonally opposite corner, click **Mark
+corner B** — width/height fill in automatically. Stop jogging at the first
+sign of resistance: there are no limit switches, and if the belt slips while
+the motor keeps turning, the software counts millimetres that never happened
+and you get a bed size larger than reality.
 
 The CLI commands below still work standalone and are what the console
 calls under the hood.

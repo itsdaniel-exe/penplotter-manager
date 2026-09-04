@@ -1,11 +1,11 @@
 "use strict";
 
 const state = {
-  bed: { widthMm: 195, heightMm: 295 },
+  bed: { widthMm: 195, heightMm: 300 },
   page: { widthMm: 195, heightMm: 280, marginTopMm: 15, marginBottomMm: 15, marginLeftMm: 12, marginRightMm: 12 },
   origin: { xMm: 0, yMm: 0 },
   style: { font: "HersheySansMed", fontSizeMm: 5, lineSpacingMm: 8, align: "left" },
-  machine: { servoUp: 10, servoDown: 50, travelFeed: 10000, drawFeed: 2500, invertY: true, invertX: false, swapPen: false },
+  machine: { servoUp: 10, servoDown: 50, travelFeed: 10000, drawFeed: 2500, invertY: false, invertX: true, swapPen: true },
   inputMode: "text",
   docPath: null,
   svgPath: null,
@@ -413,11 +413,24 @@ function logGrblSettings(banner) {
   log(`GRBL settings read (${Object.keys(settings).length} values). Key ones:`, "ok");
   found.forEach((k) => log(`  $${k} = ${settings[k]}  - ${GRBL_KEY_SETTINGS[k]}`));
 
-  if (settings[130] !== undefined && settings[131] !== undefined) {
-    log(`Firmware thinks travel is ${settings[130]} x ${settings[131]} mm - a starting guess for bed size, still verify it physically.`, "ok");
+  // $130/$131 are only enforced when soft limits are on. With $20=0 they are
+  // inert, and on this machine they still read GRBL's stock 200.000 default -
+  // so they say nothing about the real bed. Don't imply otherwise.
+  if (settings[130] !== undefined && settings[131] !== undefined && settings[20] === "1") {
+    log(`Firmware enforces a ${settings[130]} x ${settings[131]}mm travel limit (soft limits are on).`, "ok");
+  } else if (settings[130] !== undefined) {
+    log(`Ignore $130/$131 (${settings[130]} x ${settings[131]}) - soft limits are off, so they're unused stock defaults, not the real bed. The measured bed size in the panel is the one that counts.`, "ok");
   }
   if (settings[22] === "1") {
+    $("jogHome").disabled = false;
+    $("jogHome").title = "Run GRBL's homing cycle";
     log("Homing is enabled, so GRBL starts in Alarm and will refuse to jog. Click Home to home it, or Unlock to override.", "warn");
+  } else if (settings[22] !== undefined) {
+    // $H seeks a limit switch. Without one it can only ever return an
+    // error, so don't leave a button sitting there that cannot work.
+    $("jogHome").disabled = true;
+    $("jogHome").title = "This machine has no homing switches ($22=0) - use \"Zero here\" to set a reference, and \"Go to zero\" to return to it";
+    log("No homing switches on this machine ($22=0), so Home is disabled - use \"Zero here\" to set a reference point and \"Go to zero\" to return to it.", "ok");
   }
   if (settings[20] === "1") {
     log("Soft limits are on - moves beyond max travel get rejected instead of crashing the gantry.", "ok");
@@ -425,7 +438,7 @@ function logGrblSettings(banner) {
 }
 
 function setLiveControlsEnabled(enabled) {
-  ["jogXp", "jogXm", "jogYp", "jogYm", "jogHome", "jogZero", "penUpBtn", "penDownBtn", "unlockBtn", "runBtn", "markCornerA", "markCornerB"].forEach((id) => {
+  ["jogXp", "jogXm", "jogYp", "jogYm", "jogHome", "jogZero", "penUpBtn", "penDownBtn", "unlockBtn", "runBtn", "markCornerA", "markCornerB", "goZero"].forEach((id) => {
     $(id).disabled = !enabled;
   });
   $("runBtn").title = enabled ? "" : "Connect first";
@@ -437,6 +450,17 @@ function connect() {
   state.connecting = true;
   setStatus("connecting", `connecting to ${port}...`);
   $("connectBtn").disabled = true;
+
+  // Close any socket this page already had. Without this, a second click on
+  // Connect leaves the old session alive on the server still holding the
+  // serial port, and the new one fails with "Access is denied".
+  if (state.ws) {
+    try {
+      state.ws.onclose = null;
+      state.ws.close();
+    } catch (e) { /* already dead - nothing to clean up */ }
+    state.ws = null;
+  }
 
   const ws = new WebSocket(wsUrl());
   state.ws = ws;
@@ -473,11 +497,24 @@ function handleWsMessage(msg) {
       $("connectBtn").disabled = false;
       setLiveControlsEnabled(true);
       log(`Connected to ${msg.port}.`, "ok");
+      if (msg.tookOver) {
+        log("Took the port over from another tab that still had it open - that tab is now disconnected.", "warn");
+      }
       if (msg.banner) logGrblSettings(msg.banner);
       break;
     case "unlocked":
       log("Alarm cleared ($X). The machine will accept motion again.", "ok");
       break;
+    case "zeroed":
+      log(`Zero set here. This spot is now 0,0 (it was ${msg.fromX.toFixed(1)}, ${msg.fromY.toFixed(1)}). Nothing moves - this only sets the reference.`, "ok");
+      break;
+    case "movedToZero": {
+      const dist = Math.hypot(msg.fromX, msg.fromY);
+      log(dist < 0.05
+        ? "Already at zero, so nothing moved."
+        : `Returned to zero from ${msg.fromX.toFixed(1)}, ${msg.fromY.toFixed(1)} (${dist.toFixed(1)}mm of travel).`, "ok");
+      break;
+    }
     case "disconnected":
       log("Disconnected.", "ok");
       break;
@@ -594,6 +631,7 @@ function wireStaticControls() {
   $("jogYm").addEventListener("click", () => sendJog(0, -step()));
   $("jogHome").addEventListener("click", () => wsAction({ action: "home" }));
   $("jogZero").addEventListener("click", () => wsAction({ action: "zero" }));
+  $("goZero").addEventListener("click", () => wsAction({ action: "goZero" }));
   // Send the whole Machine panel so tuning servo values or the swap-pen
   // checkbox actually changes what these buttons do.
   $("penUpBtn").addEventListener("click", () => {
@@ -651,8 +689,16 @@ function wireStaticControls() {
   });
 }
 
+// The arrows should move the pen the way they point, as seen by someone
+// standing at the machine. Which machine direction that is depends on how
+// this build is wired - the same physical fact the flip X/Y settings encode,
+// so derive it from them rather than hardcoding a second copy of it. Right
+// = the direction page-x grows; up = the direction page-y shrinks.
 function sendJog(dx, dy) {
-  wsAction({ action: "jog", dx, dy, feed: 3000 });
+  readFormIntoState();
+  const xSign = state.machine.invertX ? -1 : 1;
+  const ySign = state.machine.invertY ? 1 : -1;
+  wsAction({ action: "jog", dx: dx * xSign, dy: dy * ySign, feed: 3000 });
 }
 
 function wsAction(payload) {

@@ -71,9 +71,14 @@ class MachineConfig:
     dwell_s: float = 0.1               # settle time after servo move
     origin_x_mm: float = 0.0
     origin_y_mm: float = 0.0
-    invert_y: bool = True              # gcode Y grows downward-to-upward vs page top-down
-    invert_x: bool = False             # mirror left-right, if X+ runs the opposite way
-    swap_pen: bool = False             # swap which command lifts vs lowers the pen
+    # Confirmed on the real machine by test print: X+ runs physically left and
+    # Y+ runs toward the operator, so the page needs mirroring in X but not Y.
+    invert_y: bool = False             # gcode Y grows downward-to-upward vs page top-down
+    invert_x: bool = True              # mirror left-right, if X+ runs the opposite way
+    # Confirmed on the real machine: M03 S50 lifts, M05 S10 lowers - the reverse
+    # of what the old reverse-engineered files implied, and matching the real
+    # bounndrycreation1_*.gcode files (M03 before travel, M05 before drawing).
+    swap_pen: bool = True              # swap which command lifts vs lowers the pen
 
     @property
     def pen_up_cmd_value(self) -> tuple[str, int]:

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from fastapi import FastAPI, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,9 +64,9 @@ class MachineIn(BaseModel):
     servoDown: int = 50
     travelFeed: int = 10000
     drawFeed: int = 2500
-    invertY: bool = True
-    invertX: bool = False
-    swapPen: bool = False
+    invertY: bool = False
+    invertX: bool = True
+    swapPen: bool = True
     originXMm: float = 0.0
     originYMm: float = 0.0
 
@@ -99,7 +99,16 @@ def _machine_config(m: MachineIn) -> MachineConfig:
 
 @app.get("/")
 def index():
-    return FileResponse(WEB_DIR / "index.html")
+    """Serve the console with a cache-busting stamp on app.js.
+
+    Without this the browser happily keeps an old app.js after an edit, so
+    a fix looks like it silently didn't work - which cost real debugging
+    time against live hardware once already.
+    """
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    version = int((WEB_DIR / "app.js").stat().st_mtime)
+    html = html.replace("/static/app.js", f"/static/app.js?v={version}")
+    return HTMLResponse(html)
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
@@ -207,6 +216,39 @@ class Session:
         self.lock = threading.Lock()
 
 
+# Windows allows exactly one open handle on a COM port - a second one fails
+# with "Access is denied". Every browser tab (and every stale one left open)
+# gets its own Session, so without this the first tab to connect silently
+# owns the machine and every other tab is stuck. Hand the port to whoever
+# asked most recently instead, and drop the previous holder.
+_port_owner_lock = threading.Lock()
+_port_owner: Session | None = None
+
+
+def _take_port_ownership(session: Session) -> bool:
+    """Make `session` the sole owner of the real serial port. Returns True if
+    a previous owner had to be disconnected."""
+    global _port_owner
+    with _port_owner_lock:
+        prev = _port_owner
+        _port_owner = session
+        if prev is None or prev is session or prev.streamer is None:
+            return False
+        try:
+            prev.streamer.close()
+        except Exception:  # noqa: BLE001 - a dead handle is still worth dropping
+            pass
+        prev.streamer = None
+        return True
+
+
+def _release_port_ownership(session: Session) -> None:
+    global _port_owner
+    with _port_owner_lock:
+        if _port_owner is session:
+            _port_owner = None
+
+
 def _run_job_blocking(session: Session, machine: MachineConfig, pages, page: PageConfig, q: queue.Queue):
     streamer = session.streamer
     total_pages = len(pages)
@@ -286,29 +328,43 @@ async def ws_session(websocket: WebSocket):
                 session.bed_width_mm = bed.get("widthMm")
                 session.bed_height_mm = bed.get("heightMm")
 
+                # Drop any stale connection this session already had, so
+                # clicking Connect twice doesn't strand an open handle.
+                if session.streamer is not None:
+                    try:
+                        await loop.run_in_executor(None, session.streamer.close)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    session.streamer = None
+
                 if port == SIMULATOR_PORT:
                     # speed_factor: a live "Run" plays at 15x real speed
                     # instead of completing instantly, so pause/resume/
                     # cancel have an actual window to be used and the live
                     # position readout visibly moves - unlike the fast,
                     # instant bulk simulation /api/simulate uses for stats.
+                    _release_port_ownership(session)
                     session.fake_port = FakeGrblPort(session.bed_width_mm, session.bed_height_mm, speed_factor=15.0)
                     session.streamer = GrblStreamer(port=port, baud=baud, transport=session.fake_port)
+                    took_over = False
                 else:
                     session.fake_port = None
+                    took_over = await loop.run_in_executor(None, _take_port_ownership, session)
                     session.streamer = GrblStreamer(port=port, baud=baud)
 
                 try:
                     banner = await loop.run_in_executor(None, session.streamer.connect)
-                    q.put({"type": "connected", "port": port, "banner": banner})
+                    q.put({"type": "connected", "port": port, "banner": banner, "tookOver": took_over})
                 except Exception as e:  # noqa: BLE001
                     q.put({"type": "error", "message": f"Could not connect to {port}: {e}"})
                     session.streamer = None
+                    _release_port_ownership(session)
 
             elif action == "disconnect":
                 if session.streamer:
                     await loop.run_in_executor(None, session.streamer.close)
                     session.streamer = None
+                _release_port_ownership(session)
                 q.put({"type": "disconnected"})
 
             elif action == "jog" and session.streamer:
@@ -347,7 +403,19 @@ async def ws_session(websocket: WebSocket):
                 except Exception as e:  # noqa: BLE001
                     q.put({"type": "error", "message": f"Homing failed: {e}"})
             elif action == "zero" and session.streamer:
+                # Neither of these moves anything visible when you're already
+                # at zero, so confirm them explicitly - otherwise a working
+                # button is indistinguishable from a dead one.
+                was = session.streamer.position
                 await loop.run_in_executor(None, track_position_after, session.streamer.set_zero)
+                q.put({"type": "zeroed", "fromX": was[0], "fromY": was[1]})
+            elif action == "goZero" and session.streamer:
+                was = session.streamer.position
+                try:
+                    await loop.run_in_executor(None, track_position_after, session.streamer.go_to_zero)
+                    q.put({"type": "movedToZero", "fromX": was[0], "fromY": was[1]})
+                except Exception as e:  # noqa: BLE001
+                    q.put({"type": "error", "message": f"Could not return to zero: {e}"})
 
             elif action == "pause" and session.streamer:
                 session.streamer.pause()
@@ -384,6 +452,8 @@ async def ws_session(websocket: WebSocket):
                 session.streamer.close()
             except Exception:  # noqa: BLE001
                 pass
+            session.streamer = None
+        _release_port_ownership(session)
 
 
 def main():

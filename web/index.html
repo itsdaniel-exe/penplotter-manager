@@ -159,9 +159,9 @@ canvas#stageCanvas { display: block; width: 100%; height: auto; max-height: 65vh
     <h2>Bed &amp; page</h2>
     <div class="field-row">
       <div><label for="bedW">Bed width (mm)</label><input id="bedW" type="number" value="195" step="1"></div>
-      <div><label for="bedH">Bed height (mm)</label><input id="bedH" type="number" value="295" step="1"></div>
+      <div><label for="bedH">Bed height (mm)</label><input id="bedH" type="number" value="300" step="1"></div>
     </div>
-    <div class="hint">From your own real boundary tests (bounndrycreation1_0007-0009.gcode) &mdash; re-check with the tool below if anything about the machine has changed since.</div>
+    <div class="hint">Measured on the real machine by marking opposite corners. Matches the old bounndrycreation1_*.gcode boundary tests (194.5&times;294.5). Keep pages a few mm inside this &mdash; there are no limit switches to catch an overrun.</div>
     <div class="btn-row" style="margin-top:4px">
       <button id="markCornerA" disabled>Mark corner A</button>
       <button id="markCornerB" disabled>Mark corner B</button>
@@ -240,13 +240,13 @@ The Team</textarea></div>
       <div><label for="drawFeed">Draw feed</label><input id="drawFeed" type="number" value="2500"></div>
     </div>
     <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="invertY" type="checkbox" style="width:auto" checked> flip Y (tick if the writing comes out upside-down)
+      <input id="invertY" type="checkbox" style="width:auto"> flip Y (tick if the writing comes out upside-down)
     </label>
     <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="invertX" type="checkbox" style="width:auto"> flip X (tick if the writing comes out mirrored left-right)
+      <input id="invertX" type="checkbox" style="width:auto" checked> flip X (tick if the writing comes out mirrored left-right)
     </label>
     <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="swapPen" type="checkbox" style="width:auto"> swap pen up/down (tick if the Pen up button lowers the pen instead of lifting it)
+      <input id="swapPen" type="checkbox" style="width:auto" checked> swap pen up/down (tick if the Pen up button lowers the pen instead of lifting it)
     </label>
 
     <div class="btn-row" style="margin-top:4px">
@@ -298,6 +298,7 @@ The Team</textarea></div>
             <option>1</option><option selected>5</option><option>20</option><option>50</option>
           </select>
           <button id="jogZero" disabled>Zero here</button>
+          <button id="goZero" disabled title="Travel back to the last 'Zero here' point">Go to zero</button>
         </div>
       </div>
       <div class="btn-row">
