@@ -264,29 +264,55 @@ function drawBedDiagram() {
   if (!(bedW > 0 && bedH > 0)) return;
   const pad = Math.max(bedW, bedH) * 0.06;
   svg.setAttribute("viewBox", `${-pad} ${-pad} ${bedW + pad * 2} ${bedH + pad * 2}`);
-  const toY = (mmY) => bedH - mmY;
+
+  // This diagram shows the paper the way the operator is looking at it, but
+  // the machine's own axes don't necessarily run that way - on this build X+
+  // goes physically left and Y+ comes toward the operator. So map machine
+  // coordinates to the drawing using the same flips gcode.py applies, or the
+  // pen dot tracks backwards (it did, on both axes).
+  const { invertX, invertY } = state.machine;
+  const sx = (mx) => (invertX ? bedW - mx : mx);
+  const sy = (my) => (invertY ? bedH - my : my);
 
   const ox = state.origin.xMm, oy = state.origin.yMm;
-  const pageTop = oy + state.page.heightMm;
-  const contentTop = pageTop - state.page.marginTopMm;
-  const contentBottom = oy + state.page.marginBottomMm;
-  const contentLeft = ox + state.page.marginLeftMm;
-  const contentRight = ox + state.page.widthMm - state.page.marginRightMm;
+  const pw = state.page.widthMm, ph = state.page.heightMm;
+
+  // Page-space (top-left origin, y down) -> machine mm. Mirrors gcode.py.
+  const toMachine = (px, py) => [
+    ox + (invertX ? pw - px : px),
+    oy + (invertY ? ph - py : py),
+  ];
+
+  /** Rect attributes from two opposite corners given in machine mm. */
+  const rectFrom = (m0, m1) => {
+    const x0 = sx(m0[0]), x1 = sx(m1[0]);
+    const y0 = sy(m0[1]), y1 = sy(m1[1]);
+    return `x="${Math.min(x0, x1)}" y="${Math.min(y0, y1)}" ` +
+           `width="${Math.abs(x1 - x0)}" height="${Math.abs(y1 - y0)}"`;
+  };
+
+  const page0 = toMachine(0, 0);
+  const page1 = toMachine(pw, ph);
+  const content0 = toMachine(state.page.marginLeftMm, state.page.marginTopMm);
+  const content1 = toMachine(pw - state.page.marginRightMm, ph - state.page.marginBottomMm);
 
   const sw = bedW * 0.004;
   let s = "";
   s += `<rect x="0" y="0" width="${bedW}" height="${bedH}" fill="var(--paper)" stroke="var(--paper-edge)" stroke-width="${sw}" stroke-dasharray="${bedW * 0.012},${bedW * 0.012}"/>`;
-  s += `<rect x="${ox}" y="${toY(pageTop)}" width="${state.page.widthMm}" height="${state.page.heightMm}" fill="none" stroke="var(--accent)" stroke-width="${sw * 1.5}"/>`;
-  s += `<rect x="${contentLeft}" y="${toY(contentTop)}" width="${Math.max(0, contentRight - contentLeft)}" height="${Math.max(0, contentTop - contentBottom)}" fill="none" stroke="var(--ink-faint)" stroke-width="${sw}" stroke-dasharray="${bedW * 0.008},${bedW * 0.008}"/>`;
-  s += `<circle cx="${ox}" cy="${toY(oy)}" r="${bedW * 0.01}" fill="var(--accent)"/>`;
-  s += `<text x="${ox + bedW * 0.018}" y="${toY(oy) - bedW * 0.012}" font-size="${bedW * 0.032}" fill="var(--ink-faint)" font-family="var(--font-mono)">0,0</text>`;
+  s += `<rect ${rectFrom(page0, page1)} fill="none" stroke="var(--accent)" stroke-width="${sw * 1.5}"/>`;
+  s += `<rect ${rectFrom(content0, content1)} fill="none" stroke="var(--ink-faint)" stroke-width="${sw}" stroke-dasharray="${bedW * 0.008},${bedW * 0.008}"/>`;
+
+  // Machine zero - where "Zero here" was set, and the corner every job runs from.
+  const zx = sx(0), zy = sy(0);
+  s += `<circle cx="${zx}" cy="${zy}" r="${bedW * 0.01}" fill="var(--accent)"/>`;
+  s += `<text x="${zx + (invertX ? -bedW * 0.075 : bedW * 0.018)}" y="${zy + (invertY ? -bedW * 0.012 : bedW * 0.05)}" font-size="${bedW * 0.032}" fill="var(--ink-faint)" font-family="var(--font-mono)">0,0</text>`;
 
   const px = state.position.x, py = state.position.y;
-  s += `<circle cx="${px}" cy="${toY(py)}" r="${bedW * 0.013}" fill="${state.penDown ? "var(--accent)" : "var(--ink-faint)"}" stroke="var(--panel)" stroke-width="${sw}"/>`;
+  s += `<circle cx="${sx(px)}" cy="${sy(py)}" r="${bedW * 0.013}" fill="${state.penDown ? "var(--accent)" : "var(--ink-faint)"}" stroke="var(--panel)" stroke-width="${sw}"/>`;
 
   svg.innerHTML = s;
   $("dimNote").textContent =
-    `bed ${bedW}×${bedH}mm · page ${state.page.widthMm}×${state.page.heightMm}mm at (${ox},${oy})`;
+    `bed ${bedW}×${bedH}mm · page ${pw}×${ph}mm at (${ox},${oy})`;
   $("posLabel").textContent = `${px.toFixed(1)}, ${py.toFixed(1)}`;
 }
 
