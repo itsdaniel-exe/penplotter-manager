@@ -9,12 +9,12 @@
   --bg: #eef1ef;
   --panel: #ffffff;
   --panel-border: #dde1dd;
+  --panel-sunken: #f6f8f6;
   --ink: #1c2321;
   --ink-soft: #5b625e;
   --ink-faint: #8a918d;
   --paper: #fdfdfb;
   --paper-edge: #cfd6d1;
-  --grid: #dde3df;
   --accent: #9c6b2e;
   --accent-strong: #7d5622;
   --accent-tint: #f1e4cf;
@@ -23,92 +23,129 @@
   --bad: #a4402f;
   --bad-tint: #f6e4e0;
   --shadow: 0 1px 2px rgba(28,35,33,0.05), 0 6px 20px -10px rgba(28,35,33,0.18);
+  --shadow-lift: 0 10px 40px -12px rgba(28,35,33,0.35);
   --font-ui: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "Consolas", "SF Mono", Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14181a; --panel: #1b201f; --panel-border: #2c332f;
+    --bg: #14181a; --panel: #1b201f; --panel-border: #2c332f; --panel-sunken: #171c1b;
     --ink: #eef0ea; --ink-soft: #aeb5af; --ink-faint: #6e766f;
-    --paper: #1b201f; --paper-edge: #343d3a; --grid: #262e2b;
+    --paper: #1b201f; --paper-edge: #343d3a;
     --accent: #c99a52; --accent-strong: #e0b46e; --accent-tint: #3a2f1c;
     --good: #6fbf94; --good-tint: #1c2c22;
     --bad: #e08772; --bad-tint: #33211d;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 6px 20px -10px rgba(0,0,0,0.5);
+    --shadow-lift: 0 10px 40px -12px rgba(0,0,0,0.7);
   }
 }
 * { box-sizing: border-box; }
+/* A bare [hidden] loses to any CSS display rule, and several elements below
+   set display: flex/grid - so make it win. */
+[hidden] { display: none !important; }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-ui);
   font-size: 13px; line-height: 1.45;
 }
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
-h1 { font-size: 16px; }
-h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-soft); }
+h1 { font-size: 15px; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); }
+h3 { font-size: 12px; color: var(--ink-soft); }
 label { font-size: 11px; color: var(--ink-soft); display: block; margin-bottom: 3px; }
 input, select, textarea, button { font-family: inherit; font-size: 13px; color: var(--ink); }
 input[type="number"], input[type="text"], select, textarea {
   width: 100%; background: var(--paper); border: 1px solid var(--panel-border); border-radius: 5px;
   padding: 6px 8px; font-variant-numeric: tabular-nums;
 }
+input[type="file"] { width: 100%; font-size: 12px; }
 input:focus, select:focus, textarea:focus, button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 button {
   cursor: pointer; border: 1px solid var(--panel-border); background: var(--panel);
-  border-radius: 6px; padding: 7px 12px; font-weight: 500; transition: border-color 0.12s;
+  border-radius: 6px; padding: 7px 12px; font-weight: 500; transition: border-color .12s, background .12s;
 }
-button:hover { border-color: var(--accent); }
-button:active { transform: translateY(1px); }
-button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity: .42; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
 button.danger { color: var(--bad); }
-.field-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 8px; }
+button.ghost { background: transparent; }
+button.wide { width: 100%; }
+
+.field-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.field-row.four { grid-template-columns: repeat(4, 1fr); }
+.stack { display: flex; flex-direction: column; gap: 10px; }
 .panel {
   background: var(--panel); border: 1px solid var(--panel-border); border-radius: 10px;
-  box-shadow: var(--shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: var(--shadow); padding: 14px; display: flex; flex-direction: column; gap: 11px;
 }
+.hint { font-size: 11px; color: var(--ink-faint); }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--ink); margin: 0; }
+.check input { width: auto; margin-top: 2px; flex: none; }
+.check span { color: var(--ink-soft); }
 
-/* layout */
+/* collapsible groups */
+details.group { border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel-sunken); }
+details.group > summary {
+  cursor: pointer; padding: 8px 11px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--ink-soft); font-weight: 600; list-style: none;
+  display: flex; align-items: center; gap: 7px;
+}
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary::before {
+  content: "›"; display: inline-block; transition: transform .15s; font-size: 15px; line-height: 1;
+}
+details.group[open] > summary::before { transform: rotate(90deg); }
+details.group > summary:hover { color: var(--ink); }
+.group-body { padding: 0 11px 11px; display: flex; flex-direction: column; gap: 10px; }
+
+/* header */
 header {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 18px; border-bottom: 1px solid var(--panel-border); background: var(--panel);
+  padding: 10px 16px; border-bottom: 1px solid var(--panel-border); background: var(--panel);
+  position: sticky; top: 0; z-index: 20;
 }
 .brand { display: flex; align-items: center; gap: 8px; }
 .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .conn { display: flex; align-items: center; gap: 8px; }
 .status-pill {
   font-family: var(--font-mono); font-size: 11px; padding: 4px 10px; border-radius: 999px;
-  border: 1px solid var(--panel-border); display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--panel-border); display: flex; align-items: center; gap: 6px; white-space: nowrap;
 }
-.status-pill .led { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); }
+.status-pill .led { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); flex: none; }
 .status-pill.connected .led { background: var(--good); box-shadow: 0 0 0 3px var(--good-tint); }
 .status-pill.connecting .led { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); animation: pulse 1s infinite; }
-@keyframes pulse { 50% { opacity: 0.4; } }
+@keyframes pulse { 50% { opacity: .4; } }
+.icon-btn { padding: 6px 9px; line-height: 1; font-size: 15px; }
 
-main {
-  display: grid; grid-template-columns: 300px 340px 1fr; gap: 14px; padding: 14px;
-  align-items: start;
-}
-@media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+main { display: grid; grid-template-columns: 310px minmax(0,1fr) 320px; gap: 14px; padding: 14px; align-items: start; }
+@media (max-width: 1240px) { main { grid-template-columns: 300px minmax(0,1fr); } }
+@media (max-width: 900px)  { main { grid-template-columns: 1fr; } }
 
-.tabs { display: flex; gap: 2px; background: var(--paper); border: 1px solid var(--panel-border); border-radius: 8px; padding: 3px; }
+.tabs { display: flex; gap: 2px; background: var(--panel-sunken); border: 1px solid var(--panel-border); border-radius: 8px; padding: 3px; }
 .tabs button { flex: 1; border: none; background: transparent; border-radius: 6px; padding: 6px; font-size: 12px; }
 .tabs button.active { background: var(--accent-tint); color: var(--accent-strong); font-weight: 600; }
 
-textarea#textInput { min-height: 140px; resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
+textarea#textInput { min-height: 150px; resize: vertical; font-family: var(--font-mono); font-size: 12.5px; }
 
 .diagram-wrap { border: 1px solid var(--paper-edge); border-radius: 6px; background: var(--paper); overflow: hidden; }
 svg#bedSvg { display: block; width: 100%; height: auto; }
+.dim-note { font-size: 10.5px; color: var(--ink-faint); font-family: var(--font-mono); }
 
-.dim-note { font-size: 11px; color: var(--ink-faint); font-family: var(--font-mono); }
-
-.stage-canvas-frame { position: relative; border: 1px solid var(--paper-edge); border-radius: 6px; overflow: hidden; background: var(--paper); max-width: 420px; max-height: 65vh; margin: 0 auto; }
-canvas#stageCanvas { display: block; width: 100%; height: auto; max-height: 65vh; object-fit: contain; }
+.stage-canvas-frame {
+  position: relative; border: 1px solid var(--paper-edge); border-radius: 6px; overflow: hidden;
+  background: var(--paper); max-width: 460px; margin: 0 auto; width: 100%;
+}
+/* explicit width/height are set by prepareCanvas() so a tall page is fitted
+   to the viewport instead of overflowing it */
+canvas#stageCanvas { display: block; margin: 0 auto; max-width: 100%; }
 .pen-badge {
   position: absolute; top: 8px; left: 8px; display: flex; align-items: center; gap: 6px;
-  font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
   padding: 4px 8px 4px 6px; border-radius: 999px; background: var(--panel); border: 1px solid var(--panel-border);
   color: var(--ink-soft);
 }
@@ -117,26 +154,39 @@ canvas#stageCanvas { display: block; width: 100%; height: auto; max-height: 65vh
 
 .transport { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .transport input[type="range"] { flex: 1; min-width: 120px; }
-.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px,1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
-.readout .cell { background: var(--panel); padding: 8px 10px; }
-.readout .k { font-size: 10px; text-transform: uppercase; color: var(--ink-soft); letter-spacing: 0.05em; }
-.readout .v { font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px,1fr)); gap: 1px; background: var(--panel-border); border: 1px solid var(--panel-border); border-radius: 8px; overflow: hidden; }
+.readout .cell { background: var(--panel); padding: 7px 10px; }
+.readout .k { font-size: 9.5px; text-transform: uppercase; color: var(--ink-soft); letter-spacing: .05em; }
+.readout .v { font-family: var(--font-mono); font-size: 13.5px; font-variant-numeric: tabular-nums; }
 
-.jog-grid { display: grid; grid-template-columns: repeat(3, 40px); grid-template-rows: repeat(3, 34px); gap: 4px; justify-content: center; }
+.jog-row { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+.jog-grid { display: grid; grid-template-columns: repeat(3, 38px); grid-template-rows: repeat(3, 32px); gap: 4px; }
 .jog-grid button { padding: 0; font-size: 15px; }
-.jog-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.jog-side { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
 
-.log { font-family: var(--font-mono); font-size: 11px; background: var(--paper); border: 1px solid var(--panel-border);
-  border-radius: 6px; padding: 8px; height: 140px; overflow-y: auto; }
+.log { font-family: var(--font-mono); font-size: 11px; background: var(--panel-sunken); border: 1px solid var(--panel-border);
+  border-radius: 6px; padding: 8px; height: 170px; overflow-y: auto; }
 .log .line { white-space: pre-wrap; word-break: break-word; padding: 1px 0; color: var(--ink-soft); }
 .log .line.warn { color: var(--bad); }
 .log .line.ok { color: var(--good); }
 
 .warn-box { background: var(--bad-tint); color: var(--bad); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; }
+.note-box { background: var(--panel-sunken); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 10px; font-size: 11px; color: var(--ink-faint); }
 
-.hint { font-size: 11px; color: var(--ink-faint); }
-.row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* settings modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(14,18,17,.45); z-index: 40;
+  display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px;
+  overflow-y: auto;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px;
+  box-shadow: var(--shadow-lift); width: 100%; max-width: 460px; display: flex; flex-direction: column;
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--panel-border); }
+.modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 11px; }
+.modal-foot { padding: 12px 16px; border-top: 1px solid var(--panel-border); display: flex; justify-content: space-between; gap: 8px; }
 </style>
 </head>
 <body>
@@ -147,57 +197,16 @@ canvas#stageCanvas { display: block; width: 100%; height: auto; max-height: 65vh
     <h1>Pen Plotter Console</h1>
   </div>
   <div class="conn">
-    <select id="portSelect" style="width:180px"></select>
+    <select id="portSelect" style="width:170px"></select>
     <button id="connectBtn" class="primary">Connect</button>
     <span id="statusPill" class="status-pill"><span class="led"></span><span id="statusText">disconnected</span></span>
+    <button id="settingsBtn" class="icon-btn" title="Machine settings &amp; calibration">&#9881;</button>
   </div>
 </header>
 
 <main>
-  <!-- Column A: bed + page -->
-  <div class="panel">
-    <h2>Bed &amp; page</h2>
-    <div class="field-row">
-      <div><label for="bedW">Bed width (mm)</label><input id="bedW" type="number" value="195" step="1"></div>
-      <div><label for="bedH">Bed height (mm)</label><input id="bedH" type="number" value="300" step="1"></div>
-    </div>
-    <div class="hint">Measured on the real machine by marking opposite corners. Matches the old bounndrycreation1_*.gcode boundary tests (194.5&times;294.5). Keep pages a few mm inside this &mdash; there are no limit switches to catch an overrun.</div>
-    <div class="btn-row" style="margin-top:4px">
-      <button id="markCornerA" disabled>Mark corner A</button>
-      <button id="markCornerB" disabled>Mark corner B</button>
-    </div>
-    <div class="hint" id="bedCalHint">
-      Connect, then jog to one corner and click Mark corner A. Jog to the
-      opposite corner and click Mark corner B &mdash; width/height above fill
-      in automatically.
-    </div>
 
-    <div class="field-row">
-      <div><label for="pageW">Page width (mm)</label><input id="pageW" type="number" value="195" step="1"></div>
-      <div><label for="pageH">Page height (mm)</label><input id="pageH" type="number" value="280" step="1"></div>
-    </div>
-    <div class="field-row">
-      <div><label for="originX">Page origin X (mm)</label><input id="originX" type="number" value="0" step="1"></div>
-      <div><label for="originY">Page origin Y (mm)</label><input id="originY" type="number" value="0" step="1"></div>
-    </div>
-    <div class="btn-row">
-      <button id="centerBtn">Center page in bed</button>
-      <button id="cornerBtn">Origin at corner</button>
-    </div>
-
-    <div class="diagram-wrap"><svg id="bedSvg" viewBox="0 0 300 300"></svg></div>
-    <div class="dim-note" id="dimNote">bed 200 &times; 280mm &middot; page 195 &times; 280mm</div>
-
-    <h2 style="margin-top:6px">Margins (mm)</h2>
-    <div class="field-row">
-      <div><label for="mTop">Top</label><input id="mTop" type="number" value="15"></div>
-      <div><label for="mBottom">Bottom</label><input id="mBottom" type="number" value="15"></div>
-      <div><label for="mLeft">Left</label><input id="mLeft" type="number" value="12"></div>
-      <div><label for="mRight">Right</label><input id="mRight" type="number" value="12"></div>
-    </div>
-  </div>
-
-  <!-- Column B: input + style -->
+  <!-- ---------------------------------------------------- job setup -- -->
   <div class="panel">
     <h2>Content</h2>
     <div class="tabs" id="inputTabs">
@@ -211,100 +220,124 @@ Thank you so much for your order. This letter was written automatically, formatt
 
 Warm regards,
 The Team</textarea></div>
-    <div id="filePane" style="display:none">
+    <div id="filePane" hidden>
       <input id="fileInput" type="file" accept=".pdf,.docx,.txt">
       <div class="hint" id="fileName">No file chosen.</div>
     </div>
-    <div id="svgPane" style="display:none">
+    <div id="svgPane" hidden>
       <input id="svgInput" type="file" accept=".svg">
       <div class="hint" id="svgName">No file chosen.</div>
     </div>
 
-    <h2 style="margin-top:6px">Style</h2>
+    <h2 style="margin-top:4px">Page</h2>
+    <div><label for="pagePreset">Preset</label><select id="pagePreset"></select></div>
+    <div class="field-row">
+      <div><label for="pageW">Width (mm)</label><input id="pageW" type="number" value="195" step="1"></div>
+      <div><label for="pageH">Height (mm)</label><input id="pageH" type="number" value="295" step="1"></div>
+    </div>
+
+    <h2 style="margin-top:4px">Handwriting</h2>
     <div><label for="fontSelect">Font</label><select id="fontSelect"></select></div>
     <div class="field-row">
       <div><label for="fontSize">Size (mm)</label><input id="fontSize" type="number" value="5" step="0.5"></div>
-      <div><label for="lineSpacing">Line spacing (mm)</label><input id="lineSpacing" type="number" value="8" step="0.5"></div>
-    </div>
-    <div><label for="alignSelect">Align</label>
-      <select id="alignSelect"><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select>
+      <div><label for="lineSpacing">Line spacing</label><input id="lineSpacing" type="number" value="8" step="0.5"></div>
     </div>
 
-    <h2 style="margin-top:6px">Machine</h2>
-    <div class="field-row">
-      <div><label for="servoUp">Servo up</label><input id="servoUp" type="number" value="10"></div>
-      <div><label for="servoDown">Servo down</label><input id="servoDown" type="number" value="50"></div>
-    </div>
-    <div class="field-row">
-      <div><label for="travelFeed">Travel feed</label><input id="travelFeed" type="number" value="10000"></div>
-      <div><label for="drawFeed">Draw feed</label><input id="drawFeed" type="number" value="2500"></div>
-    </div>
-    <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="invertY" type="checkbox" style="width:auto"> flip Y (tick if the writing comes out upside-down)
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="invertX" type="checkbox" style="width:auto" checked> flip X (tick if the writing comes out mirrored left-right)
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;font-size:11px">
-      <input id="swapPen" type="checkbox" style="width:auto" checked> swap pen up/down (tick if the Pen up button lowers the pen instead of lifting it)
-    </label>
+    <details class="group">
+      <summary>Margins &amp; placement</summary>
+      <div class="group-body">
+        <div><label for="alignSelect">Align</label>
+          <select id="alignSelect">
+            <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+          </select>
+        </div>
+        <div>
+          <label>Margins (mm)</label>
+          <div class="field-row four">
+            <div><label for="mTop">Top</label><input id="mTop" type="number" value="15"></div>
+            <div><label for="mBottom">Bottom</label><input id="mBottom" type="number" value="15"></div>
+            <div><label for="mLeft">Left</label><input id="mLeft" type="number" value="12"></div>
+            <div><label for="mRight">Right</label><input id="mRight" type="number" value="12"></div>
+          </div>
+        </div>
+        <div class="field-row">
+          <div><label for="originX">Origin X (mm)</label><input id="originX" type="number" value="0" step="1"></div>
+          <div><label for="originY">Origin Y (mm)</label><input id="originY" type="number" value="0" step="1"></div>
+        </div>
+        <div class="btn-row">
+          <button id="centerBtn">Center in bed</button>
+          <button id="cornerBtn">Origin at corner</button>
+        </div>
+      </div>
+    </details>
 
-    <div class="btn-row" style="margin-top:4px">
+    <div class="btn-row" style="margin-top:2px">
       <button id="previewBtn">Preview</button>
       <button id="simulateBtn">Simulate</button>
-      <button id="runBtn" class="primary" disabled title="Connect first">Run on machine</button>
     </div>
+    <button id="runBtn" class="primary wide" disabled title="Connect first">Run on machine</button>
   </div>
 
-  <!-- Column C: stage + jog + log -->
-  <div style="display:flex; flex-direction:column; gap:14px">
-    <div class="panel">
-      <div class="row-between">
-        <h2 id="stageTitle">Preview</h2>
-        <span class="hint" id="stageHint">Renders the formatted page - nothing is sent anywhere.</span>
-      </div>
-      <div class="stage-canvas-frame">
-        <canvas id="stageCanvas" width="1000" height="1280"></canvas>
-        <div class="pen-badge" id="penBadge"><span class="pd"></span><span id="penBadgeLabel">pen up</span></div>
-      </div>
-      <div class="transport" id="transport" style="display:none">
-        <button id="playBtn">&#9658;</button>
-        <input id="scrub" type="range" min="0" max="1000" value="0">
-        <span class="hint" id="timeLabel">0:00 / 0:00</span>
-      </div>
-      <div class="readout" id="readout" style="display:none">
-        <div class="cell"><div class="k">Time</div><div class="v" id="rTime">0:00</div></div>
-        <div class="cell"><div class="k">Drawn</div><div class="v" id="rDrawn">0mm</div></div>
-        <div class="cell"><div class="k">Travel</div><div class="v" id="rTravel">0mm</div></div>
-        <div class="cell"><div class="k">Lines</div><div class="v" id="rLines">0</div></div>
-      </div>
-      <div id="warnBox" class="warn-box" style="display:none"></div>
+  <!-- -------------------------------------------------------- stage -- -->
+  <div class="panel">
+    <div class="row-between">
+      <h2 id="stageTitle">Preview</h2>
+      <span class="hint" id="stageHint">Renders the formatted page &mdash; nothing is sent anywhere.</span>
     </div>
+    <div class="stage-canvas-frame">
+      <canvas id="stageCanvas" width="1000" height="1280"></canvas>
+      <div class="pen-badge" id="penBadge"><span class="pd"></span><span id="penBadgeLabel">pen up</span></div>
+    </div>
+    <div class="transport" id="transport" hidden>
+      <button id="playBtn">&#9658;</button>
+      <input id="scrub" type="range" min="0" max="1000" value="0">
+      <span class="hint" id="timeLabel">0:00 / 0:00</span>
+    </div>
+    <div class="readout" id="readout" hidden>
+      <div class="cell"><div class="k">Time</div><div class="v" id="rTime">0:00</div></div>
+      <div class="cell"><div class="k">Drawn</div><div class="v" id="rDrawn">0mm</div></div>
+      <div class="cell"><div class="k">Travel</div><div class="v" id="rTravel">0mm</div></div>
+      <div class="cell"><div class="k">Lines</div><div class="v" id="rLines">0</div></div>
+    </div>
+    <div id="warnBox" class="warn-box" hidden></div>
+  </div>
 
+  <!-- ------------------------------------------------------ machine -- -->
+  <div class="stack">
     <div class="panel">
       <div class="row-between">
-        <h2>Jog</h2>
-        <span class="hint">position <span id="posLabel" style="font-family:var(--font-mono)">0.0, 0.0</span></span>
+        <h2>Machine</h2>
+        <span class="hint">at <span id="posLabel" style="font-family:var(--font-mono)">0.0, 0.0</span></span>
       </div>
+
+      <div class="diagram-wrap"><svg id="bedSvg" viewBox="0 0 300 300"></svg></div>
+      <div class="dim-note" id="dimNote"></div>
+
       <div class="jog-row">
         <div class="jog-grid">
-          <span></span><button id="jogYp" disabled>&#8593;</button><span></span>
-          <button id="jogXm" disabled>&#8592;</button><button id="jogHome" disabled title="Home">&#8962;</button><button id="jogXp" disabled>&#8594;</button>
-          <span></span><button id="jogYm" disabled>&#8595;</button><span></span>
+          <span></span><button id="jogYp" disabled title="Move away from you">&#8593;</button><span></span>
+          <button id="jogXm" disabled title="Move left">&#8592;</button>
+          <button id="jogHome" disabled title="Home">&#8962;</button>
+          <button id="jogXp" disabled title="Move right">&#8594;</button>
+          <span></span><button id="jogYm" disabled title="Move toward you">&#8595;</button><span></span>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <label for="stepSize">Step (mm)</label>
-          <select id="stepSize" style="width:80px">
-            <option>1</option><option selected>5</option><option>20</option><option>50</option>
-          </select>
-          <button id="jogZero" disabled>Zero here</button>
+        <div class="jog-side">
+          <div><label for="stepSize">Step (mm)</label>
+            <select id="stepSize">
+              <option>1</option><option selected>5</option><option>20</option><option>50</option>
+            </select>
+          </div>
+          <button id="jogZero" disabled title="Mark this spot as 0,0 - nothing moves">Zero here</button>
           <button id="goZero" disabled title="Travel back to the last 'Zero here' point">Go to zero</button>
         </div>
       </div>
+
       <div class="btn-row">
         <button id="penUpBtn" disabled>Pen up</button>
         <button id="penDownBtn" disabled>Pen down</button>
-        <button id="unlockBtn" disabled title="Clear a GRBL alarm ($X) so the machine will accept motion again">Unlock</button>
+        <button id="unlockBtn" disabled title="Clear a GRBL alarm ($X) so the machine accepts motion again">Unlock</button>
+      </div>
+      <div class="btn-row">
         <button id="pauseBtn" disabled>Pause</button>
         <button id="resumeBtn" disabled>Resume</button>
         <button id="cancelBtn" disabled class="danger">Cancel job</button>
@@ -312,11 +345,97 @@ The Team</textarea></div>
     </div>
 
     <div class="panel">
-      <h2>Log</h2>
+      <div class="row-between">
+        <h2>Log</h2>
+        <button id="clearLogBtn" class="ghost" style="padding:3px 8px;font-size:11px">Clear</button>
+      </div>
       <div class="log" id="logBox"></div>
     </div>
   </div>
+
 </main>
+
+<!-- ------------------------------------------------ settings modal -- -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-head">
+      <h1 id="settingsTitle">Machine settings</h1>
+      <button id="settingsClose" class="ghost icon-btn" title="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="note-box">
+        These describe how this particular machine is built. They were set by
+        calibration and shouldn't need changing day to day.
+      </div>
+
+      <details class="group" open>
+        <summary>Work area</summary>
+        <div class="group-body">
+          <div class="field-row">
+            <div><label for="bedW">Bed width (mm)</label><input id="bedW" type="number" value="195" step="1"></div>
+            <div><label for="bedH">Bed height (mm)</label><input id="bedH" type="number" value="300" step="1"></div>
+          </div>
+          <div class="hint">
+            Measured by marking opposite corners. There are no limit switches,
+            so keep pages a few mm inside this.
+          </div>
+          <div class="btn-row">
+            <button id="markCornerA" disabled>Mark corner A</button>
+            <button id="markCornerB" disabled>Mark corner B</button>
+          </div>
+          <div class="hint" id="bedCalHint">
+            To re-measure: connect, jog to one corner and mark A, then jog to the
+            diagonally opposite corner and mark B.
+          </div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Orientation</summary>
+        <div class="group-body">
+          <label class="check">
+            <input id="invertX" type="checkbox" checked>
+            <span>Flip X &mdash; tick if writing comes out mirrored left-to-right</span>
+          </label>
+          <label class="check">
+            <input id="invertY" type="checkbox">
+            <span>Flip Y &mdash; tick if writing comes out upside-down</span>
+          </label>
+          <div class="hint">These also set which way the jog arrows move.</div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Pen &amp; servo</summary>
+        <div class="group-body">
+          <div class="field-row">
+            <div><label for="servoUp">Servo up</label><input id="servoUp" type="number" value="10"></div>
+            <div><label for="servoDown">Servo down</label><input id="servoDown" type="number" value="50"></div>
+          </div>
+          <label class="check">
+            <input id="swapPen" type="checkbox" checked>
+            <span>Swap pen up/down &mdash; tick if "Pen up" lowers the pen instead of lifting it</span>
+          </label>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Speeds</summary>
+        <div class="group-body">
+          <div class="field-row">
+            <div><label for="travelFeed">Travel feed (mm/min)</label><input id="travelFeed" type="number" value="10000"></div>
+            <div><label for="drawFeed">Draw feed (mm/min)</label><input id="drawFeed" type="number" value="2500"></div>
+          </div>
+          <div class="hint">Travel is pen-up moves, draw is pen-down.</div>
+        </div>
+      </details>
+    </div>
+    <div class="modal-foot">
+      <button id="resetSettingsBtn" class="danger">Reset to defaults</button>
+      <button id="settingsDone" class="primary">Done</button>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>
