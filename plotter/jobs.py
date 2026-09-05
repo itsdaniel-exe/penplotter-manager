@@ -8,7 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from . import extract, gcode as gcode_mod, svgin
+from .autofit import autofit_style
 from .config import MachineConfig, PageConfig, TextStyle
+from .handwriting import HandStyle
 from .layout import PlacedText, layout_text
 from .simulator import FakeGrblPort
 from .stream import GrblStreamer
@@ -21,11 +23,38 @@ class JobInput:
     svg_path: str | None = None
 
 
-def build_pages(job: JobInput, page: PageConfig, style: TextStyle) -> list[PlacedText]:
+def build_pages(
+    job: JobInput,
+    page: PageConfig,
+    style: TextStyle,
+    hand: HandStyle | None = None,
+    auto_fit: bool = False,
+    target_pages: int = 1,
+) -> list[PlacedText]:
+    """Input -> laid-out pages. `auto_fit` picks the font size and line
+    spacing that fill the writing area; `hand` makes the result read as
+    handwriting. Neither applies to an SVG, which is placed as drawn."""
     if job.svg_path:
         return [svgin.load_svg_strokes(job.svg_path, page)]
     content = job.text if job.text is not None else extract.extract_text(job.doc_path)
-    return layout_text(content, page, style)
+    if auto_fit:
+        style = autofit_style(content, page, style, target_pages=target_pages)
+    return layout_text(content, page, style, hand)
+
+
+def resolved_style(
+    job: JobInput,
+    page: PageConfig,
+    style: TextStyle,
+    auto_fit: bool = False,
+    target_pages: int = 1,
+) -> TextStyle:
+    """The style actually used for `job` - i.e. `style`, with auto-fit applied
+    if requested. Lets the UI show the size it landed on."""
+    if not auto_fit or job.svg_path:
+        return style
+    content = job.text if job.text is not None else extract.extract_text(job.doc_path)
+    return autofit_style(content, page, style, target_pages=target_pages)
 
 
 @dataclass

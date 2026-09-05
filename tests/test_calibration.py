@@ -11,48 +11,14 @@ Plain Python, no test framework needed:
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from ._harness import RecordingPort, check, report, run
 
 from plotter import server as srv
 from plotter.config import MachineConfig
 from plotter.gcode import strokes_to_gcode
 from plotter.layout import PlacedText
 from plotter.stream import GrblStreamer
-
-FAILURES: list[str] = []
-
-
-def check(label: str, condition: bool, detail: str = "") -> None:
-    if condition:
-        print(f"  ok   {label}")
-    else:
-        print(f"  FAIL {label}" + (f" - {detail}" if detail else ""))
-        FAILURES.append(label)
-
-
-class RecordingPort:
-    """Minimal pyserial-shaped transport that records what was written."""
-
-    is_open = True
-
-    def __init__(self):
-        self.written: list[str] = []
-
-    def write(self, data: bytes) -> None:
-        self.written.append(data.decode().strip())
-
-    def readline(self) -> bytes:
-        return b"ok\r\n"
-
-    def reset_input_buffer(self) -> None:
-        pass
-
-    def close(self) -> None:
-        self.is_open = False
-
 
 # ------------------------------------------------------------ orientation --
 
@@ -183,18 +149,9 @@ def test_serial_port_ownership():
 
 
 def main() -> int:
-    for test in (test_page_orientation, test_pen_mapping, test_servo_values_are_sent,
-                 test_go_to_zero, test_serial_port_ownership):
-        test()
-        print()
-
-    if FAILURES:
-        print(f"{len(FAILURES)} check(s) FAILED:")
-        for name in FAILURES:
-            print(f"  - {name}")
-        return 1
-    print("All calibration checks passed.")
-    return 0
+    run([test_page_orientation, test_pen_mapping, test_servo_values_are_sent,
+         test_go_to_zero, test_serial_port_ownership])
+    return report()
 
 
 if __name__ == "__main__":

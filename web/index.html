@@ -238,9 +238,27 @@ The Team</textarea></div>
 
     <h2 style="margin-top:4px">Handwriting</h2>
     <div><label for="fontSelect">Font</label><select id="fontSelect"></select></div>
+
+    <label class="check">
+      <input id="autoFit" type="checkbox" checked>
+      <span>Fit to page automatically &mdash; sizes the writing to fill the space</span>
+    </label>
     <div class="field-row">
       <div><label for="fontSize">Size (mm)</label><input id="fontSize" type="number" value="5" step="0.5"></div>
       <div><label for="lineSpacing">Line spacing</label><input id="lineSpacing" type="number" value="8" step="0.5"></div>
+    </div>
+    <div class="hint" id="autoFitNote" hidden></div>
+
+    <label class="check">
+      <input id="handEnabled" type="checkbox" checked>
+      <span>Make it look hand-written &mdash; varies letters, spacing and baselines</span>
+    </label>
+    <div id="handControls">
+      <label for="handAmount">Variation <span id="handAmountLabel" class="hint">natural</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="handAmount" type="range" min="0.3" max="2" step="0.1" value="1" style="flex:1">
+        <button id="handReshuffle" title="Draw a different hand from the same text">Reshuffle</button>
+      </div>
     </div>
 
     <details class="group">

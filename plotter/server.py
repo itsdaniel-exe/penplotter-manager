@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from . import gcode as gcode_mod, jobs as jobs_mod
 from .config import MachineConfig, PageConfig, TextStyle, PAGE_SIZES
 from .fonts import list_fonts
+from .handwriting import HandStyle
 from .simulator import FakeGrblPort
 from .stream import GrblStreamer, list_ports
 
@@ -51,6 +52,16 @@ class StyleIn(BaseModel):
     fontSizeMm: float = 5.0
     lineSpacingMm: float = 8.0
     align: Literal["left", "center", "right"] = "left"
+    autoFit: bool = False
+    targetPages: int = 1
+
+
+class HandIn(BaseModel):
+    """Handwriting realism. `seed` keeps a page reproducible, so Preview,
+    Simulate and the real Run all draw the identical page."""
+    enabled: bool = True
+    amount: float = 1.0
+    seed: int = 7
 
 
 class InputIn(BaseModel):
@@ -86,6 +97,12 @@ def _page_config(p: PageIn) -> PageConfig:
 
 def _style_config(s: StyleIn) -> TextStyle:
     return TextStyle(font=s.font, font_size_mm=s.fontSizeMm, line_spacing_mm=s.lineSpacingMm, align=s.align)
+
+
+def _hand_style(h: HandIn | None) -> HandStyle:
+    if h is None:
+        return HandStyle(enabled=False)
+    return HandStyle(enabled=h.enabled, amount=h.amount, seed=h.seed)
 
 
 def _machine_config(m: MachineIn) -> MachineConfig:
@@ -147,14 +164,17 @@ class PreviewRequest(BaseModel):
     input: InputIn
     page: PageIn
     style: StyleIn
+    hand: HandIn = HandIn()
 
 
 @app.post("/api/preview")
 def api_preview(req: PreviewRequest):
     page = _page_config(req.page)
     style = _style_config(req.style)
+    hand = _hand_style(req.hand)
     job = jobs_mod.JobInput(text=req.input.text, doc_path=req.input.docPath, svg_path=req.input.svgPath)
-    pages = jobs_mod.build_pages(job, page, style)
+    used = jobs_mod.resolved_style(job, page, style, req.style.autoFit, req.style.targetPages)
+    pages = jobs_mod.build_pages(job, page, style, hand, req.style.autoFit, req.style.targetPages)
     return {
         "pages": [
             {"strokes": [[[round(x, 3), round(y, 3)] for x, y in s] for s in p.strokes]}
@@ -166,6 +186,9 @@ def api_preview(req: PreviewRequest):
         "marginBottomMm": page.margin_bottom_mm,
         "marginLeftMm": page.margin_left_mm,
         "marginRightMm": page.margin_right_mm,
+        # so the UI can show what auto-fit actually chose
+        "fontSizeMm": used.font_size_mm,
+        "lineSpacingMm": used.line_spacing_mm,
     }
 
 
@@ -177,6 +200,7 @@ class SimulateRequest(BaseModel):
     style: StyleIn
     machine: MachineIn = MachineIn()
     bed: BedIn = BedIn()
+    hand: HandIn = HandIn()
 
 
 @app.post("/api/simulate")
@@ -184,13 +208,17 @@ def api_simulate(req: SimulateRequest):
     page = _page_config(req.page)
     style = _style_config(req.style)
     machine = _machine_config(req.machine)
+    hand = _hand_style(req.hand)
     job = jobs_mod.JobInput(text=req.input.text, doc_path=req.input.docPath, svg_path=req.input.svgPath)
-    pages = jobs_mod.build_pages(job, page, style)
+    used = jobs_mod.resolved_style(job, page, style, req.style.autoFit, req.style.targetPages)
+    pages = jobs_mod.build_pages(job, page, style, hand, req.style.autoFit, req.style.targetPages)
 
     results = [jobs_mod.simulate_page(p, page, machine, req.bed.widthMm, req.bed.heightMm) for p in pages]
     return {
         "pageWidthMm": page.width_mm,
         "pageHeightMm": page.height_mm,
+        "fontSizeMm": used.font_size_mm,
+        "lineSpacingMm": used.line_spacing_mm,
         "pages": [
             {
                 "lines": r.lines,
@@ -428,13 +456,21 @@ async def ws_session(websocket: WebSocket):
                 page = _page_config(PageIn(**msg["page"]))
                 style = _style_config(StyleIn(**msg["style"]))
                 machine = _machine_config(MachineIn(**msg.get("machine", {})))
+                style_in = StyleIn(**msg["style"])
+                hand = _hand_style(HandIn(**msg["hand"]) if msg.get("hand") else None)
                 job = jobs_mod.JobInput(
                     text=msg["input"].get("text"),
                     doc_path=msg["input"].get("docPath"),
                     svg_path=msg["input"].get("svgPath"),
                 )
                 try:
-                    pages = await loop.run_in_executor(None, jobs_mod.build_pages, job, page, style)
+                    # Same arguments the preview used, so the pen draws exactly
+                    # the page that was previewed - the handwriting jitter is
+                    # seeded, not re-rolled here.
+                    pages = await loop.run_in_executor(
+                        None, jobs_mod.build_pages, job, page, style,
+                        hand, style_in.autoFit, style_in.targetPages,
+                    )
                 except Exception as e:  # noqa: BLE001
                     q.put({"type": "error", "message": f"Could not build job: {e}"})
                     continue

@@ -7,7 +7,10 @@ const DEFAULTS = {
   bed: { widthMm: 195, heightMm: 300 },
   page: { widthMm: 195, heightMm: 295, marginTopMm: 15, marginBottomMm: 15, marginLeftMm: 12, marginRightMm: 12 },
   origin: { xMm: 0, yMm: 0 },
-  style: { font: "HersheySansMed", fontSizeMm: 5, lineSpacingMm: 8, align: "left" },
+  style: { font: "HersheySansMed", fontSizeMm: 5, lineSpacingMm: 8, align: "left", autoFit: true, targetPages: 1 },
+  // Handwriting realism. seed keeps a page reproducible, so what Preview
+  // shows is exactly what the pen draws - Reshuffle changes it deliberately.
+  hand: { enabled: true, amount: 1.0, seed: 7 },
   // invertX/invertY/swapPen were all confirmed against the real machine by
   // test print; see HANDOFF.md before changing the defaults.
   machine: { servoUp: 10, servoDown: 50, travelFeed: 10000, drawFeed: 2500, invertY: false, invertX: true, swapPen: true },
@@ -85,7 +88,7 @@ function loadSettings() {
     return; // corrupt or unavailable storage - defaults are fine
   }
   if (!saved) return;
-  for (const key of ["bed", "page", "origin", "style", "machine"]) {
+  for (const key of ["bed", "page", "origin", "style", "machine", "hand"]) {
     if (saved[key] && typeof saved[key] === "object") Object.assign(state[key], saved[key]);
   }
   if (saved.stepMm) state.stepMm = saved.stepMm;
@@ -95,7 +98,7 @@ function saveSettings() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       bed: state.bed, page: state.page, origin: state.origin,
-      style: state.style, machine: state.machine, stepMm: state.stepMm,
+      style: state.style, machine: state.machine, hand: state.hand, stepMm: state.stepMm,
     }));
   } catch (e) { /* private mode / storage full - not worth interrupting for */ }
 }
@@ -131,6 +134,10 @@ function applyStateToForm() {
   $("fontSize").value = state.style.fontSizeMm;
   $("lineSpacing").value = state.style.lineSpacingMm;
   $("alignSelect").value = state.style.align;
+  $("autoFit").checked = state.style.autoFit;
+  $("handEnabled").checked = state.hand.enabled;
+  $("handAmount").value = state.hand.amount;
+  syncHandwritingControls();
   $("servoUp").value = state.machine.servoUp;
   $("servoDown").value = state.machine.servoDown;
   $("travelFeed").value = state.machine.travelFeed;
@@ -164,7 +171,34 @@ function readFormIntoState() {
   state.machine.invertY = $("invertY").checked;
   state.machine.invertX = $("invertX").checked;
   state.machine.swapPen = $("swapPen").checked;
+  state.style.autoFit = $("autoFit").checked;
+  state.hand.enabled = $("handEnabled").checked;
+  state.hand.amount = parseFloat($("handAmount").value) || 1;
   state.stepMm = $("stepSize").value;
+}
+
+const HAND_AMOUNT_LABELS = [
+  [0.6, "barely there"],
+  [1.2, "natural"],
+  [1.6, "loose"],
+  [Infinity, "casual"],
+];
+
+/** Size/spacing are computed when auto-fit is on, so show them read-only
+ *  rather than letting the operator edit a value that gets overwritten. */
+function syncHandwritingControls() {
+  const auto = $("autoFit").checked;
+  $("fontSize").disabled = auto;
+  $("lineSpacing").disabled = auto;
+  $("autoFitNote").hidden = !auto;
+  if (auto && !$("autoFitNote").textContent) {
+    $("autoFitNote").textContent = "Size is chosen on Preview.";
+  }
+
+  const on = $("handEnabled").checked;
+  $("handControls").hidden = !on;
+  const amount = parseFloat($("handAmount").value) || 1;
+  $("handAmountLabel").textContent = HAND_AMOUNT_LABELS.find(([max]) => amount < max)[1];
 }
 
 function num(id) {
@@ -195,6 +229,22 @@ function currentPagePayload() {
 
 function currentStylePayload() {
   return { ...state.style };
+}
+
+function currentHandPayload() {
+  return { ...state.hand };
+}
+
+/** Auto-fit computes the size server-side; reflect what it chose. */
+function showResolvedSize(data) {
+  if (!state.style.autoFit || data.fontSizeMm === undefined) return;
+  state.style.fontSizeMm = data.fontSizeMm;
+  state.style.lineSpacingMm = data.lineSpacingMm;
+  $("fontSize").value = data.fontSizeMm;
+  $("lineSpacing").value = data.lineSpacingMm;
+  $("autoFitNote").textContent =
+    `Fitted to ${data.fontSizeMm}mm text, ${data.lineSpacingMm}mm line spacing.`;
+  saveSettings();
 }
 
 function currentMachinePayload() {
@@ -308,10 +358,14 @@ async function doPreview() {
     const r = await fetch("/api/preview", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input: currentInputPayload(), page: currentPagePayload(), style: currentStylePayload() }),
+      body: JSON.stringify({
+        input: currentInputPayload(), page: currentPagePayload(),
+        style: currentStylePayload(), hand: currentHandPayload(),
+      }),
     });
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
+    showResolvedSize(data);
     const allStrokes = data.pages.flatMap((p) => p.strokes);
     drawStaticStrokes(allStrokes, data.pageWidthMm, data.pageHeightMm);
     log(`Preview: ${data.pages.length} page(s), ${allStrokes.length} strokes.`, "ok");
@@ -334,10 +388,12 @@ async function doSimulate() {
       body: JSON.stringify({
         input: currentInputPayload(), page: currentPagePayload(), style: currentStylePayload(),
         machine: currentMachinePayload(), bed: { widthMm: state.bed.widthMm, heightMm: state.bed.heightMm },
+        hand: currentHandPayload(),
       }),
     });
     if (!r.ok) throw new Error(await r.text());
     const data = await r.json();
+    showResolvedSize(data);
     startPlayback(data);
     const warnCount = data.pages.reduce((n, p) => n + p.boundsWarnings.length, 0);
     $("warnBox").hidden = !warnCount;
@@ -709,6 +765,17 @@ function wireStaticControls() {
     $(id).addEventListener("change", refreshLayout);
   });
 
+  ["autoFit", "handEnabled"].forEach((id) => {
+    $(id).addEventListener("change", () => { syncHandwritingControls(); refreshLayout(); });
+  });
+  $("handAmount").addEventListener("input", () => { syncHandwritingControls(); refreshLayout(); });
+  $("handReshuffle").addEventListener("click", () => {
+    state.hand.seed = Math.floor(Math.random() * 100000);
+    saveSettings();
+    log("Reshuffled the handwriting - Preview again to see it.", "ok");
+    doPreview();
+  });
+
   $("pagePreset").addEventListener("change", () => {
     const size = state.pageSizes[$("pagePreset").value];
     if (!size) return; // "Custom" - leave the numbers alone
@@ -811,6 +878,7 @@ function wireStaticControls() {
       action: "run",
       input: currentInputPayload(), page: currentPagePayload(),
       style: currentStylePayload(), machine: currentMachinePayload(),
+      hand: currentHandPayload(),
     });
     $("stageTitle").textContent = "Running";
     stopPlayback();

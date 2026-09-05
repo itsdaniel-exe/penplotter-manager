@@ -16,8 +16,9 @@ extension + UGS + the raw CLI commands below with a single interface.
 Open **http://127.0.0.1:8765**. The layout is three columns:
 
 - **Left — the job.** Content (typed text, a document, or an SVG), page size,
-  font and size. Margins, alignment and page placement live in a collapsible
-  *Margins & placement* group so they stay out of the way until wanted.
+  font, and the two handwriting controls below. Margins, alignment and page
+  placement live in a collapsible *Margins & placement* group so they stay out
+  of the way until wanted.
 - **Middle — the stage.** *Preview* draws the formatted page; *Simulate*
   replays it through a fake GRBL board with a scrubbable animation and
   time/distance stats. Neither touches hardware.
@@ -33,6 +34,38 @@ your calibration.
 The port dropdown always includes "Simulator (no hardware)" — pick that to do
 everything (preview, simulate, jog, run) with nothing attached. Pick the real
 port instead and every button does the same thing against the real board.
+
+### Making it look hand-written
+
+Two controls, both on by default.
+
+**Fit to page automatically** sizes the writing to fill the sheet, so you type
+the letter and the software picks the font size and line spacing rather than
+you guessing and re-previewing. Short notes stay at a sensible maximum (7mm)
+instead of being blown up to poster size; a long letter shrinks until it fits,
+down to a legible floor of 2.2mm, below which it spills to a second page
+rather than becoming something the pen can't draw. The size it chose is shown
+under the checkbox after each Preview.
+
+**Make it look hand-written** breaks up the mechanical regularity that gives a
+plotter away. A stroke font drawn verbatim repeats every letter identically on
+a perfectly ruled baseline; this varies, in small correlated amounts:
+
+- baselines drift and tilt slightly instead of ruling straight
+- each letter gets its own small rotation, scale and nudge, so no two `e`s match
+- "straight" strokes bow very slightly, the way a hand's do
+- letter and word spacing vary, and line starts don't stack perfectly
+
+The *Variation* slider goes from barely-there to casual; the default sits at a
+neat formal hand. **Reshuffle** draws a different hand from the same text.
+
+The variation is seeded, which matters more than it sounds: Preview, Simulate
+and the real Run each lay the page out independently, so an unseeded version
+would draw something other than what you previewed. Same text and seed always
+give the same page.
+
+Both are available from the CLI too — `--auto-fit`, `--handwriting`,
+`--hand-amount`, `--hand-seed`.
 
 ### Work area
 
@@ -182,7 +215,7 @@ Settings → Orientation are the fix; the rest of the pipeline is verified.
 Run the checks with:
 
 ```bash
-.venv\Scripts\python -m tests.test_calibration
+.venv\Scripts\python -m tests
 ```
 
 ## Project layout
@@ -193,6 +226,8 @@ plotter/
   layout.py     word-wrap + paginate text into placed strokes
   extract.py    pull text out of .pdf / .docx / .txt
   svgin.py      load an existing SVG's strokes, fit to page
+  handwriting.py  perturbs placement so output reads as hand-written (seeded)
+  autofit.py    picks the font size/line spacing that fill the writing area
   gcode.py      strokes -> gcode in this machine's dialect (applies invert_x/y, swap_pen)
   stream.py     GRBL serial streaming + jog/zero/go-to-zero/pen (replaces UGS)
   simulator.py  fake GRBL board for testing/rehearsal without hardware
@@ -201,7 +236,7 @@ plotter/
   cli.py        the `plot` commands (fonts/ports/preview/gcode/simulate/send/run)
   server.py     the web console (FastAPI + WebSocket live session, serial port ownership)
 web/            the console's frontend (index.html + app.js), served by server.py
-tests/          regression tests for the calibrated machine facts
+tests/          regression tests: machine calibration + text formatting
 fonts/          the Hershey/EMS SVG stroke fonts (copied from your existing setup)
 jobs/           generated previews, gcode, and uploads land here (gitignored)
 ```

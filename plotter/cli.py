@@ -23,6 +23,7 @@ import re
 from . import extract, gcode as gcode_mod, jobs as jobs_mod, svgin
 from .config import MachineConfig, PageConfig, TextStyle, PAGE_SIZES
 from .fonts import list_fonts
+from .handwriting import HandStyle
 from .layout import layout_text
 from .preview import render_svg
 from .simulator import FakeGrblPort
@@ -75,6 +76,16 @@ def _common_page_options(f):
     f = click.option("--font-size-mm", type=float, default=5.0)(f)
     f = click.option("--line-spacing-mm", type=float, default=8.0)(f)
     f = click.option("--align", type=click.Choice(["left", "center", "right"]), default="left")(f)
+    f = click.option("--auto-fit", is_flag=True, default=False,
+                      help="Size the text to fill the page, ignoring --font-size-mm.")(f)
+    f = click.option("--target-pages", type=int, default=1,
+                      help="With --auto-fit, how many pages to fill.")(f)
+    f = click.option("--handwriting/--no-handwriting", "handwriting", default=False,
+                      help="Vary letters, spacing and baselines so it reads as hand-written.")(f)
+    f = click.option("--hand-amount", type=float, default=1.0,
+                      help="How much variation (0.3 subtle - 2.0 casual).")(f)
+    f = click.option("--hand-seed", type=int, default=7,
+                      help="Same seed gives the same page; change it for a different hand.")(f)
     return f
 
 
@@ -97,10 +108,16 @@ def _resolve_input_text(text, doc_file) -> str:
     raise click.UsageError("Provide --text, --file, or --svg.")
 
 
-def _build_pages(text, doc_file, svg_file, page: PageConfig, style: TextStyle):
+def _build_pages(text, doc_file, svg_file, page: PageConfig, style: TextStyle,
+                 handwriting=False, hand_amount=1.0, hand_seed=7,
+                 auto_fit=False, target_pages=1):
     if not (text or doc_file or svg_file):
         raise click.UsageError("Provide --text, --file, or --svg.")
-    return jobs_mod.build_pages(jobs_mod.JobInput(text=text, doc_path=doc_file, svg_path=svg_file), page, style)
+    hand = HandStyle(enabled=handwriting, amount=hand_amount, seed=hand_seed)
+    return jobs_mod.build_pages(
+        jobs_mod.JobInput(text=text, doc_path=doc_file, svg_path=svg_file),
+        page, style, hand, auto_fit, target_pages,
+    )
 
 
 @click.group()
@@ -128,11 +145,13 @@ def ports_cmd():
 @cli.command("preview")
 @_common_page_options
 def preview_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape,
-                 margin_mm, font_name, font_size_mm, line_spacing_mm, align):
+                 margin_mm, font_name, font_size_mm, line_spacing_mm, align,
+                 auto_fit, target_pages, handwriting, hand_amount, hand_seed):
     """Render the formatted page(s) to SVG for a visual check, no machine needed."""
     page = _resolve_page(page_size, width_mm, height_mm, landscape, margin_mm)
     style = TextStyle(font=font_name, font_size_mm=font_size_mm, line_spacing_mm=line_spacing_mm, align=align)
-    pages = _build_pages(text, doc_file, svg_file, page, style)
+    pages = _build_pages(text, doc_file, svg_file, page, style,
+                         handwriting, hand_amount, hand_seed, auto_fit, target_pages)
 
     JOBS_DIR.mkdir(exist_ok=True)
     for i, p in enumerate(pages, start=1):
@@ -149,12 +168,13 @@ def preview_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landsc
 @click.option("--travel-feed", type=int, default=10000)
 @click.option("--draw-feed", type=int, default=2500)
 def gcode_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape, margin_mm,
-              font_name, font_size_mm, line_spacing_mm, align, out_prefix,
+              font_name, font_size_mm, line_spacing_mm, align, auto_fit, target_pages, handwriting, hand_amount, hand_seed, out_prefix,
               servo_up, servo_down, travel_feed, draw_feed):
     """Generate .gcode file(s) without sending to the machine."""
     page = _resolve_page(page_size, width_mm, height_mm, landscape, margin_mm)
     style = TextStyle(font=font_name, font_size_mm=font_size_mm, line_spacing_mm=line_spacing_mm, align=align)
-    pages = _build_pages(text, doc_file, svg_file, page, style)
+    pages = _build_pages(text, doc_file, svg_file, page, style,
+                         handwriting, hand_amount, hand_seed, auto_fit, target_pages)
     machine = MachineConfig(servo_up=servo_up, servo_down=servo_down,
                              travel_feed=travel_feed, draw_feed=draw_feed)
 
@@ -179,7 +199,7 @@ def gcode_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscap
 @click.option("--bed-width-mm", type=float, default=None, help="If known, flags moves outside this width.")
 @click.option("--bed-height-mm", type=float, default=None, help="If known, flags moves outside this height.")
 def simulate_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape, margin_mm,
-                  font_name, font_size_mm, line_spacing_mm, align,
+                  font_name, font_size_mm, line_spacing_mm, align, auto_fit, target_pages, handwriting, hand_amount, hand_seed,
                   servo_up, servo_down, travel_feed, draw_feed, bed_width_mm, bed_height_mm):
     """Run the job through a simulated GRBL board - no hardware needed.
 
@@ -190,7 +210,8 @@ def simulate_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, lands
     """
     page = _resolve_page(page_size, width_mm, height_mm, landscape, margin_mm)
     style = TextStyle(font=font_name, font_size_mm=font_size_mm, line_spacing_mm=line_spacing_mm, align=align)
-    pages = _build_pages(text, doc_file, svg_file, page, style)
+    pages = _build_pages(text, doc_file, svg_file, page, style,
+                         handwriting, hand_amount, hand_seed, auto_fit, target_pages)
     machine = MachineConfig(servo_up=servo_up, servo_down=servo_down,
                              travel_feed=travel_feed, draw_feed=draw_feed)
 
@@ -253,12 +274,13 @@ def send_cmd(gcode_file, port, baud):
 @click.option("--draw-feed", type=int, default=2500)
 @click.option("--dry-run", is_flag=True, help="Generate + preview only, don't touch the serial port.")
 def run_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape, margin_mm,
-            font_name, font_size_mm, line_spacing_mm, align, port, baud,
+            font_name, font_size_mm, line_spacing_mm, align, auto_fit, target_pages, handwriting, hand_amount, hand_seed, port, baud,
             servo_up, servo_down, travel_feed, draw_feed, dry_run):
     """One-shot: format the page(s) and write them, page by page, on the plotter."""
     page = _resolve_page(page_size, width_mm, height_mm, landscape, margin_mm)
     style = TextStyle(font=font_name, font_size_mm=font_size_mm, line_spacing_mm=line_spacing_mm, align=align)
-    pages = _build_pages(text, doc_file, svg_file, page, style)
+    pages = _build_pages(text, doc_file, svg_file, page, style,
+                         handwriting, hand_amount, hand_seed, auto_fit, target_pages)
     machine = MachineConfig(port=port, baud=baud, servo_up=servo_up, servo_down=servo_down,
                              travel_feed=travel_feed, draw_feed=draw_feed)
 
