@@ -5,3 +5,7 @@ __pycache__/
 *.log
 *.lnk
 plotter things/RUN PEN PLOTTER/Gcode/
+
+# packaged app build output - the exe goes on a GitHub release, not in git
+packaging/build/
+packaging/dist/

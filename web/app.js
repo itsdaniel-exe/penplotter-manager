@@ -37,6 +37,11 @@ const state = {
   playback: null,    // {pages, pageIndex, playing, simTime, speed, ...}
   lastPreview: null, // kept so a window resize can re-render at the new size
   bedCal: { a: null, b: null }, // corners marked during bed-size calibration
+  pages: null,       // every previewed/simulated page, so all of them can be seen
+  pageIndex: 0,
+  stageStale: false, // job settings changed since what the stage is showing
+  lastRun: null,     // the payload of the running job, for a "run anyway" retry
+  penKnown: false,   // false until something has actually driven the servo
 };
 
 const $ = (id) => document.getElementById(id);
@@ -46,15 +51,76 @@ const $ = (id) => document.getElementById(id);
 async function init() {
   loadSettings();
   wireStaticControls();
-  await Promise.all([loadFonts(), loadPorts(), loadPageSizes()]);
+  try {
+    await Promise.all([loadFonts(), loadPorts(), loadPageSizes()]);
+  } catch (e) {
+    // Without this the form was left on its HTML defaults while state held the
+    // saved calibration - and the next keystroke saved those defaults over it.
+    log("Could not reach the server on startup: " + e.message +
+        ". Reload the page once it is running - don't edit anything yet, or the "
+        + "saved calibration will be overwritten.", "warn");
+    return;
+  }
   applyStateToForm();
   readFormIntoState();
   drawBedDiagram();
+  loadAppInfo();
   // Give the (empty) stage the right page shape immediately - otherwise the
   // canvas shows at its intrinsic bitmap size until the first Preview.
   watchStageSize();
   redrawStage();
   log("Console ready. Nothing is connected yet - Preview and Simulate work offline.", "ok");
+  checkForUpdate();
+}
+
+/** Version and where this install keeps its files - both needed the moment
+ *  anyone reports a problem from another desk. */
+async function loadAppInfo() {
+  try {
+    const info = await (await fetch("/api/app-info")).json();
+    state.appInfo = info;
+    $("appVersion").textContent = "v" + info.version;
+  } catch (e) { /* running from source without the endpoint - not worth a warning */ }
+}
+
+/** Passive check: it reports, it never downloads or installs anything. */
+async function checkForUpdate() {
+  try {
+    const r = await fetch("/api/update-check");
+    const info = await r.json();
+    if (!info.checked || !info.updateAvailable) return;
+    $("updateBanner").hidden = false;
+    $("updateText").textContent =
+      `Version ${info.latest} is available - you have ${info.current}. `
+      + "Download it, close this app, and run the new file.";
+    log(`Update available: ${info.latest} (you have ${info.current}).`, "ok");
+  } catch (e) { /* offline is not an error worth interrupting for */ }
+}
+
+/** One file with everything needed to debug a complaint from another desk. */
+async function saveDiagnostics() {
+  try {
+    const note = window.prompt("What went wrong? (optional - it helps a lot)") || "";
+    const r = await fetch("/api/diagnostics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        note,
+        uiLog: $("logBox").innerText,
+        settings: {
+          bed: state.bed, page: state.page, origin: state.origin, style: state.style,
+          machine: state.machine, hand: state.hand, port: state.port,
+          connected: state.connected, jobRunning: state.jobRunning,
+        },
+      }),
+    });
+    if (!r.ok) throw new Error(await errorText(r));
+    const data = await r.json();
+    log(`Diagnostics saved to ${data.path} - send that file.`, "ok");
+    fetch("/api/open-folder", { method: "POST" }).catch(() => {});
+  } catch (e) {
+    log("Could not save diagnostics: " + e.message, "warn");
+  }
 }
 
 async function loadFonts() {
@@ -92,6 +158,9 @@ function loadSettings() {
     if (saved[key] && typeof saved[key] === "object") Object.assign(state[key], saved[key]);
   }
   if (saved.stepMm) state.stepMm = saved.stepMm;
+  if (typeof saved.text === "string" && saved.text && $("textInput")) {
+    $("textInput").value = saved.text;
+  }
 }
 
 function saveSettings() {
@@ -99,6 +168,8 @@ function saveSettings() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       bed: state.bed, page: state.page, origin: state.origin,
       style: state.style, machine: state.machine, hand: state.hand, stepMm: state.stepMm,
+      // the letter itself is the one thing a refresh used to throw away
+      text: $("textInput") ? $("textInput").value : "",
     }));
   } catch (e) { /* private mode / storage full - not worth interrupting for */ }
 }
@@ -321,12 +392,37 @@ function refreshLayout() {
   readFormIntoState();
   syncPagePreset();
   drawBedDiagram();
+  markStageStale();
   saveSettings();
 }
 
 // -------------------------------------------------------------- preview --
 
-function drawStaticStrokes(strokes, pageWmm, pageHmm) {
+/** Show page `i` of a multi-page preview or simulation. */
+function showPage(i) {
+  if (!state.pages || !state.pages.length) return;
+  state.pageIndex = Math.max(0, Math.min(state.pages.length - 1, i));
+  const page = state.pages[state.pageIndex];
+  syncPager();
+  if (page.trace) {
+    state.playback.pageIndex = state.pageIndex;
+    state.playback.simTime = 0;
+    setupSpeed(page.totalTimeS);
+    renderPlaybackFrame(0);
+  } else {
+    drawStaticStrokes(page.strokes, state.previewPageW, state.previewPageH, true);
+  }
+}
+
+function syncPager() {
+  const total = state.pages ? state.pages.length : 0;
+  $("pager").hidden = total < 2;
+  $("pageLabel").textContent = `page ${state.pageIndex + 1} of ${total}`;
+  $("pagePrev").disabled = state.pageIndex <= 0;
+  $("pageNext").disabled = state.pageIndex >= total - 1;
+}
+
+function drawStaticStrokes(strokes, pageWmm, pageHmm, keepPanels) {
   state.lastPreview = { strokes, pageWmm, pageHmm };
   const canvas = $("stageCanvas");
   const ctx = prepareCanvas(canvas, pageWmm, pageHmm);
@@ -339,9 +435,14 @@ function drawStaticStrokes(strokes, pageWmm, pageHmm) {
     for (let i = 1; i < stroke.length; i++) ctx.lineTo(stroke[i][0] * sx, stroke[i][1] * sy);
     ctx.stroke();
   });
-  $("transport").hidden = true;
-  $("readout").hidden = true;
-  $("warnBox").hidden = true;
+  if (!keepPanels) {
+    $("transport").hidden = true;
+    $("readout").hidden = true;
+    $("warnBox").hidden = true;
+  } else {
+    $("transport").hidden = true;
+    $("readout").hidden = true;
+  }
 }
 
 /** Size the canvas to the page aspect and return a ready-to-draw 2D context.
@@ -375,6 +476,18 @@ function prepareCanvas(canvas, pageWmm, pageHmm) {
   return ctx;
 }
 
+/** FastAPI reports a refused request as {"detail": "..."} - showing the raw
+ *  JSON body (or "Internal Server Error") tells the operator nothing useful. */
+async function errorText(response) {
+  try {
+    const body = await response.json();
+    if (body && body.detail) return body.detail;
+    return JSON.stringify(body);
+  } catch (e) {
+    return response.status + " " + response.statusText;
+  }
+}
+
 async function doPreview() {
   readFormIntoState();
   $("stageTitle").textContent = "Preview";
@@ -389,12 +502,25 @@ async function doPreview() {
         style: currentStylePayload(), hand: currentHandPayload(),
       }),
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
     showResolvedSize(data);
-    const allStrokes = data.pages.flatMap((p) => p.strokes);
-    drawStaticStrokes(allStrokes, data.pageWidthMm, data.pageHeightMm);
-    log(`Preview: ${data.pages.length} page(s), ${allStrokes.length} strokes.`, "ok");
+    // Each page on its own sheet - they used to be drawn on top of each other,
+    // which is exactly the mistake the machine used to make too.
+    state.playback = null;
+    state.pages = data.pages;
+    state.pageIndex = 0;
+    state.previewPageW = data.pageWidthMm;
+    state.previewPageH = data.pageHeightMm;
+    markStageFresh("Preview");
+    showPage(0);
+    $("warnBox").hidden = !(data.warnings && data.warnings.length);
+    if (data.warnings && data.warnings.length) {
+      $("warnBox").textContent = data.warnings.join(" ");
+      data.warnings.forEach((w) => log(w, "warn"));
+    }
+    const strokeCount = data.pages.reduce((n, p) => n + p.strokes.length, 0);
+    log(`Preview: ${data.pages.length} page(s), ${strokeCount} strokes.`, "ok");
   } catch (e) {
     log("Preview failed: " + e.message, "warn");
   }
@@ -417,10 +543,15 @@ async function doSimulate() {
         hand: currentHandPayload(),
       }),
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
     showResolvedSize(data);
+    markStageFresh("Simulate");
     startPlayback(data);
+    const totalTime = data.pages.reduce((n, p) => n + p.totalTimeS, 0);
+    if (data.pages.length > 1) {
+      log(`All ${data.pages.length} pages: about ${fmtTime(totalTime)} of plotting in total.`, "ok");
+    }
     const warnCount = data.pages.reduce((n, p) => n + p.boundsWarnings.length, 0);
     $("warnBox").hidden = !warnCount;
     if (warnCount) {
@@ -437,10 +568,27 @@ function startPlayback(data) {
     pages: data.pages, pageIndex: 0, playing: false, simTime: 0,
     pageWmm: data.pageWidthMm, pageHmm: data.pageHeightMm,
   };
+  state.pages = data.pages;
+  state.pageIndex = 0;
   $("transport").hidden = false;
   $("readout").hidden = false;
+  syncPager();
   setupSpeed(data.pages[0].totalTimeS);
   renderPlaybackFrame(0);
+}
+
+/** The stage shows a specific set of inputs; say so when they change under it. */
+function markStageFresh(title) {
+  state.stageStale = false;
+  $("stageTitle").textContent = title;
+  $("stageTitle").classList.remove("stale");
+}
+
+function markStageStale() {
+  if (!state.pages || state.stageStale || state.jobRunning) return;
+  state.stageStale = true;
+  $("stageTitle").textContent += " - out of date";
+  $("stageTitle").classList.add("stale");
 }
 
 function setupSpeed(totalTimeS) {
@@ -497,7 +645,7 @@ function renderPlaybackFrame(t) {
     ctx.beginPath();
     ctx.arc(cur.x * sx, cur.y * sy, cur.pen ? 3 : 2.2, 0, Math.PI * 2);
     ctx.fill();
-    setPenBadge(cur.pen);
+    if (!state.jobRunning) setPenBadge(cur.pen);
   }
 
   $("rTime").textContent = fmtTime(t);
@@ -517,10 +665,20 @@ function sumSegments(trace, idx, penDown) {
   return d;
 }
 
-function setPenBadge(down) {
-  state.penDown = down;
-  $("penBadge").classList.toggle("down", down);
-  $("penBadgeLabel").textContent = down ? "pen down" : "pen up";
+/** The badge on the stage describes whatever the stage is showing - a
+ *  simulation being scrubbed, or the live machine during a run. */
+function setPenBadge(down, known = true) {
+  $("penBadge").classList.toggle("down", !!down);
+  $("penBadgeLabel").textContent = !known ? "pen ?" : (down ? "pen down" : "pen up");
+}
+
+/** The machine's own pen state. Kept apart from the badge above: scrubbing a
+ *  simulation used to rewrite the machine panel's idea of where the pen is. */
+function setMachinePen(down, known) {
+  state.penDown = !!down;
+  state.penKnown = known !== false;
+  setPenBadge(state.penDown, state.penKnown);
+  drawBedDiagram();
 }
 
 let rafId = null;
@@ -617,6 +775,12 @@ const LIVE_CONTROLS = [
   "penUpBtn", "penDownBtn", "unlockBtn", "runBtn", "markCornerA", "markCornerB",
 ];
 
+// The subset that moves the machine, locked while a job streams.
+const MOTION_CONTROLS = [
+  "jogXp", "jogXm", "jogYp", "jogYm", "jogHome", "jogZero", "goZero",
+  "penUpBtn", "penDownBtn", "unlockBtn", "markCornerA", "markCornerB",
+];
+
 function setLiveControlsEnabled(enabled) {
   LIVE_CONTROLS.forEach((id) => { $(id).disabled = !enabled; });
   $("runBtn").title = enabled ? "" : "Connect first";
@@ -628,6 +792,22 @@ function setJobControls(running, paused) {
   $("pauseBtn").disabled = !running || !!paused;
   $("resumeBtn").disabled = !running || !paused;
   $("cancelBtn").disabled = !running;
+  // Everything that moves the machine has to be out of reach while a job is
+  // streaming: a jog or a "Zero here" mid-page lands in the middle of the
+  // drawing, and both sides end up writing the same serial port at once.
+  MOTION_CONTROLS.forEach((id) => { $(id).disabled = running || !state.connected; });
+  $("runBtn").disabled = running || !state.connected;
+  $("runProgress").hidden = !running;
+  if (!running) $("paperPrompt").hidden = true;
+}
+
+/** Job finished, failed or was cancelled - put the console back in a usable state. */
+function endJobState(stageTitle) {
+  state.jobRunning = false;
+  setJobControls(false);
+  $("runProgress").hidden = true;
+  $("paperPrompt").hidden = true;
+  if (stageTitle) $("stageTitle").textContent = stageTitle;
 }
 
 function connect() {
@@ -654,6 +834,8 @@ function connect() {
     ws.send(JSON.stringify({
       action: "connect", port, baud: 115200,
       bed: { widthMm: state.bed.widthMm, heightMm: state.bed.heightMm },
+      // so the live pen readout isn't inverted on a swap-pen machine
+      machine: currentMachinePayload(),
     }));
   };
   ws.onmessage = (evt) => handleWsMessage(JSON.parse(evt.data));
@@ -661,6 +843,8 @@ function connect() {
     state.connected = false;
     state.connecting = false;
     state.jobRunning = false;
+    $("runProgress").hidden = true;
+    $("paperPrompt").hidden = true;
     setStatus("", "disconnected");
     $("connectBtn").textContent = "Connect";
     $("connectBtn").disabled = false;
@@ -670,6 +854,12 @@ function connect() {
 }
 
 function disconnect() {
+  // Still connecting - there's no server session to ask, just drop the socket.
+  if (state.ws && state.ws.readyState !== WebSocket.OPEN) {
+    state.ws.close();
+    return;
+  }
+  if (state.jobRunning) log("Stopping the job before disconnecting...", "warn");
   wsAction({ action: "disconnect" });
 }
 
@@ -683,7 +873,13 @@ function handleWsMessage(msg) {
       $("connectBtn").textContent = "Disconnect";
       $("connectBtn").disabled = false;
       setLiveControlsEnabled(true);
+      setPenBadge(false, false);  // nothing has driven the servo yet
+      state.penKnown = false;
       log(`Connected to ${msg.port}.`, "ok");
+      if (msg.port !== "SIMULATOR") {
+        log("Opening the port resets the board, so any previous \"Zero here\" is gone - "
+            + "jog to the corner of your sheet and set zero again before running.", "warn");
+      }
       if (msg.tookOver) {
         log("Took the port over from another tab that still had it open - that tab is now disconnected.", "warn");
       }
@@ -702,31 +898,74 @@ function handleWsMessage(msg) {
         : `Returned to zero from ${msg.fromX.toFixed(1)}, ${msg.fromY.toFixed(1)} (${dist.toFixed(1)}mm of travel).`, "ok");
       break;
     }
+    case "portTakenOver":
+      // Another tab (or a refresh of this one) claimed the port. The server has
+      // already closed this session's handle, so say so instead of leaving
+      // every button here quietly doing nothing.
+      log("Another tab took the serial port - this tab is no longer connected to the machine.", "warn");
+      endJobState("Disconnected");
+      if (state.ws) state.ws.close();
+      break;
+    case "pageWait":
+      $("paperPrompt").hidden = false;
+      $("paperPromptText").textContent =
+        `Page ${msg.page} of ${msg.totalPages} is done. Take that sheet off, load a fresh one `
+        + "against the same zero, then continue. Every page is drawn from the same origin.";
+      log(`Page ${msg.page} of ${msg.totalPages} finished - waiting for a fresh sheet.`, "ok");
+      break;
+    case "boundsBlocked": {
+      const lines = msg.warnings.slice(0, 6).join("; ");
+      $("boundsPrompt").hidden = false;
+      $("boundsText").textContent =
+        `This job runs outside the work area you measured: ${lines}. `
+        + "There are no limit switches, so the carriage would be driven into its end stops. "
+        + "Shrink the page or margins, move the origin, or run it anyway if you know better.";
+      log("Run blocked: the job goes outside the measured work area.", "warn");
+      endJobState("Blocked");
+      break;
+    }
     case "disconnected":
       log("Disconnected.", "ok");
+      // Close the socket too - its onclose is what resets the button and
+      // status. Without this the page kept saying "connected".
+      if (state.ws) state.ws.close();
       break;
     case "error":
       log(msg.message, "warn");
+      if (state.connecting) setStatus("", "disconnected");
       state.connecting = false;
       $("connectBtn").disabled = false;
+      // A job that dies mid-page used to leave the console claiming to be
+      // plotting, with Pause and Cancel live on a job that no longer exists.
+      if (state.jobRunning) endJobState("Stopped");
       break;
     case "position":
       state.position = { x: msg.x, y: msg.y };
-      setPenBadge(!!msg.pen);
-      drawBedDiagram();
+      setMachinePen(!!msg.pen, msg.penKnown);
       break;
     case "jobStarted":
       state.jobRunning = true;
       setJobControls(true, false);
+      $("boundsPrompt").hidden = true;
+      $("runBar").style.width = "0%";
+      $("runLabel").textContent = "0%";
       log(`Run started: ${msg.totalPages} page(s).`, "ok");
+      if (msg.totalPages > 1) {
+        log(`This is a ${msg.totalPages}-page job - it stops after each page so you can change the sheet.`, "ok");
+      }
       break;
-    case "progress":
+    case "progress": {
       state.position = { x: msg.x, y: msg.y };
-      setPenBadge(!!msg.pen);
-      drawBedDiagram();
+      setMachinePen(!!msg.pen, true);
       $("stageTitle").textContent = `Running - page ${msg.page}/${msg.totalPages}`;
       $("rLines").textContent = `${msg.line} / ${msg.totalLines}`;
+      const pct = msg.totalLines ? Math.round((msg.line / msg.totalLines) * 100) : 0;
+      $("runBar").style.width = pct + "%";
+      $("runLabel").textContent = msg.totalPages > 1
+        ? `page ${msg.page}/${msg.totalPages} - ${pct}%`
+        : `${pct}%`;
       break;
+    }
     case "pageComplete":
       log(msg.cancelled
         ? `Page ${msg.page}/${msg.totalPages} cancelled partway through.`
@@ -736,10 +975,8 @@ function handleWsMessage(msg) {
       }
       break;
     case "jobComplete":
-      state.jobRunning = false;
-      setJobControls(false);
+      endJobState(msg.cancelled ? "Cancelled" : "Done");
       log(msg.cancelled ? "Job cancelled." : "Job complete.", msg.cancelled ? "warn" : "ok");
-      $("stageTitle").textContent = msg.cancelled ? "Cancelled" : "Done";
       break;
     default:
       break;
@@ -822,9 +1059,34 @@ function wireStaticControls() {
     refreshLayout();
   });
 
+  $("pagePrev").addEventListener("click", () => showPage(state.pageIndex - 1));
+  $("pageNext").addEventListener("click", () => showPage(state.pageIndex + 1));
+  $("nextPageBtn").addEventListener("click", () => {
+    $("paperPrompt").hidden = true;
+    wsAction({ action: "nextPage" });
+    log("Continuing with the next page.", "ok");
+  });
+  $("stopHereBtn").addEventListener("click", () => {
+    $("paperPrompt").hidden = true;
+    wsAction({ action: "cancel" });
+  });
+  $("boundsCancelBtn").addEventListener("click", () => { $("boundsPrompt").hidden = true; });
+  $("runAnywayBtn").addEventListener("click", () => {
+    $("boundsPrompt").hidden = true;
+    if (state.lastRun) wsAction({ ...state.lastRun, force: true });
+  });
+
+  $("textInput").addEventListener("input", () => { markStageStale(); saveSettings(); });
+
   $("previewBtn").addEventListener("click", doPreview);
   $("simulateBtn").addEventListener("click", doSimulate);
   $("clearLogBtn").addEventListener("click", () => { $("logBox").innerHTML = ""; });
+  $("diagBtn").addEventListener("click", saveDiagnostics);
+  $("updateDismissBtn").addEventListener("click", () => { $("updateBanner").hidden = true; });
+  $("updateOpenBtn").addEventListener("click", () => {
+    fetch("/api/open-releases", { method: "POST" }).catch(() => {});
+    $("updateBanner").hidden = true;
+  });
 
   // settings modal
   $("settingsBtn").addEventListener("click", openSettings);
@@ -833,7 +1095,14 @@ function wireStaticControls() {
   $("settingsModal").addEventListener("click", (e) => {
     if (e.target === $("settingsModal")) closeSettings(); // backdrop only
   });
-  $("resetSettingsBtn").addEventListener("click", resetMachineSettings);
+  $("resetSettingsBtn").addEventListener("click", () => {
+    // This throws away a measured work area, which costs a jog-and-mark
+    // session to get back.
+    if (window.confirm("Reset the work area, orientation, pen and speed settings to the "
+                       + "calibrated defaults? Your measured bed size will be lost.")) {
+      resetMachineSettings();
+    }
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("settingsModal").hidden) closeSettings();
   });
@@ -896,18 +1165,49 @@ function wireStaticControls() {
     setJobControls(state.jobRunning, false);
     log("Resumed.", "ok");
   });
-  $("cancelBtn").addEventListener("click", () => wsAction({ action: "cancel" }));
+  $("cancelBtn").addEventListener("click", () => {
+    wsAction({ action: "cancel" });
+    $("cancelBtn").disabled = true;
+    log("Stopping - the machine finishes the few moves it already has, then lifts the pen.", "ok");
+  });
 
   $("runBtn").addEventListener("click", () => {
     readFormIntoState();
-    wsAction({
+    if (state.jobRunning) return;  // the server refuses it too
+    const payload = {
       action: "run",
       input: currentInputPayload(), page: currentPagePayload(),
       style: currentStylePayload(), machine: currentMachinePayload(),
       hand: currentHandPayload(),
-    });
+    };
+    state.lastRun = payload;
+    $("runBtn").disabled = true;   // until the server confirms the job started
+    wsAction(payload);
     $("stageTitle").textContent = "Running";
     stopPlayback();
+  });
+
+  // Arrow keys jog, so the operator can line paper up without going back to
+  // the mouse for every 1mm step.
+  document.addEventListener("keydown", (e) => {
+    if (!state.connected || state.jobRunning) return;
+    const el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+    const step = parseFloat($("stepSize").value) || 1;
+    const moves = {
+      ArrowRight: [step, 0], ArrowLeft: [-step, 0],
+      ArrowUp: [0, step], ArrowDown: [0, -step],
+    };
+    if (!moves[e.key]) return;
+    e.preventDefault();
+    sendJog(moves[e.key][0], moves[e.key][1]);
+  });
+
+  // A job is a physical thing happening in the room; closing the tab stops it.
+  window.addEventListener("beforeunload", (e) => {
+    if (!state.jobRunning) return;
+    e.preventDefault();
+    e.returnValue = "";
   });
 }
 
@@ -931,6 +1231,9 @@ function markCorner(which) {
   $("bedH").value = heightMm.toFixed(1);
   refreshLayout();
   log(`Work area set to ${widthMm.toFixed(1)} x ${heightMm.toFixed(1)}mm from the two marked corners.`, "ok");
+  // Forget the pair, so re-marking one corner later doesn't silently measure
+  // against a corner from the previous calibration.
+  state.bedCal = { a: null, b: null };
 }
 
 // The arrows should move the pen the way they point, as seen by someone
@@ -972,6 +1275,8 @@ async function uploadFile(file, kind) {
 
 /** Redraw whatever the stage is currently showing, at the current size. */
 function redrawStage() {
+  // state.playback is cleared by a Preview - without that, a window resize
+  // replaced the preview on screen with the previous simulation.
   if (state.playback) renderPlaybackFrame(state.playback.simTime);
   else if (state.lastPreview) {
     const { strokes, pageWmm, pageHmm } = state.lastPreview;

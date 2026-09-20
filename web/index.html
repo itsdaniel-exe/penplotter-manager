@@ -171,6 +171,15 @@ canvas#stageCanvas { display: block; margin: 0 auto; max-width: 100%; }
 .log .line.ok { color: var(--good); }
 
 .warn-box { background: var(--bad-tint); color: var(--bad); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; }
+.info-box { background: var(--accent-tint); color: var(--accent-strong); border-radius: 6px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+.pager { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.pager button { padding: 2px 10px; line-height: 1.2; }
+
+.run-progress { display: flex; align-items: center; gap: 10px; }
+.run-progress .track { flex: 1; height: 6px; border-radius: 999px; background: var(--panel-sunken); border: 1px solid var(--panel-border); overflow: hidden; }
+.run-progress .fill { height: 100%; width: 0%; background: var(--accent); transition: width .2s linear; }
+.stale { color: var(--bad); }
 .note-box { background: var(--panel-sunken); border: 1px solid var(--panel-border); border-radius: 6px; padding: 8px 10px; font-size: 11px; color: var(--ink-faint); }
 
 /* settings modal */
@@ -195,6 +204,7 @@ canvas#stageCanvas { display: block; margin: 0 auto; max-width: 100%; }
   <div class="brand">
     <span class="dot"></span>
     <h1>Pen Plotter Console</h1>
+    <span class="hint" id="appVersion"></span>
   </div>
   <div class="conn">
     <select id="portSelect" style="width:170px"></select>
@@ -203,6 +213,14 @@ canvas#stageCanvas { display: block; margin: 0 auto; max-width: 100%; }
     <button id="settingsBtn" class="icon-btn" title="Machine settings &amp; calibration">&#9881;</button>
   </div>
 </header>
+
+<div class="info-box" id="updateBanner" hidden style="margin:14px 14px 0">
+  <div id="updateText"></div>
+  <div class="btn-row">
+    <button id="updateOpenBtn" class="primary">Open the downloads page</button>
+    <button id="updateDismissBtn">Not now</button>
+  </div>
+</div>
 
 <main>
 
@@ -306,13 +324,36 @@ The Team</textarea></div>
       <canvas id="stageCanvas" width="1000" height="1280"></canvas>
       <div class="pen-badge" id="penBadge"><span class="pd"></span><span id="penBadgeLabel">pen up</span></div>
     </div>
+    <div class="pager" id="pager" hidden>
+      <button id="pagePrev" title="Previous page">&#8249;</button>
+      <span class="hint" id="pageLabel">page 1 of 1</span>
+      <button id="pageNext" title="Next page">&#8250;</button>
+    </div>
+    <div class="run-progress" id="runProgress" hidden>
+      <div class="track"><div class="fill" id="runBar"></div></div>
+      <span class="hint" id="runLabel">0%</span>
+    </div>
+    <div class="info-box" id="paperPrompt" hidden>
+      <div id="paperPromptText">Page done. Load a fresh sheet.</div>
+      <div class="btn-row">
+        <button id="nextPageBtn" class="primary">Sheet loaded &mdash; plot the next page</button>
+        <button id="stopHereBtn" class="danger">Stop here</button>
+      </div>
+    </div>
+    <div class="warn-box" id="boundsPrompt" hidden>
+      <div id="boundsText"></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button id="boundsCancelBtn">Back to setup</button>
+        <button id="runAnywayBtn" class="danger">Run anyway</button>
+      </div>
+    </div>
     <div class="transport" id="transport" hidden>
       <button id="playBtn">&#9658;</button>
       <input id="scrub" type="range" min="0" max="1000" value="0">
       <span class="hint" id="timeLabel">0:00 / 0:00</span>
     </div>
     <div class="readout" id="readout" hidden>
-      <div class="cell"><div class="k">Time</div><div class="v" id="rTime">0:00</div></div>
+      <div class="cell" title="Estimate from the feed rates - the real machine accelerates and decelerates, so it takes a little longer"><div class="k">Time (est)</div><div class="v" id="rTime">0:00</div></div>
       <div class="cell"><div class="k">Drawn</div><div class="v" id="rDrawn">0mm</div></div>
       <div class="cell"><div class="k">Travel</div><div class="v" id="rTravel">0mm</div></div>
       <div class="cell"><div class="k">Lines</div><div class="v" id="rLines">0</div></div>
@@ -346,7 +387,8 @@ The Team</textarea></div>
             </select>
           </div>
           <button id="jogZero" disabled title="Mark this spot as 0,0 - nothing moves">Zero here</button>
-          <button id="goZero" disabled title="Travel back to the last 'Zero here' point">Go to zero</button>
+          <button id="goZero" disabled title="Travel back to the last 'Zero here' point - the pen lifts first">Go to zero</button>
+          <div class="hint">Arrow keys jog too, once connected.</div>
         </div>
       </div>
 
@@ -365,7 +407,11 @@ The Team</textarea></div>
     <div class="panel">
       <div class="row-between">
         <h2>Log</h2>
-        <button id="clearLogBtn" class="ghost" style="padding:3px 8px;font-size:11px">Clear</button>
+        <div class="btn-row">
+          <button id="diagBtn" class="ghost" style="padding:3px 8px;font-size:11px"
+                  title="Write everything needed to diagnose a problem into one file you can send">Save diagnostics</button>
+          <button id="clearLogBtn" class="ghost" style="padding:3px 8px;font-size:11px">Clear</button>
+        </div>
       </div>
       <div class="log" id="logBox"></div>
     </div>

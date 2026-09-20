@@ -18,7 +18,7 @@ from plotter import server as srv
 from plotter.config import MachineConfig
 from plotter.gcode import strokes_to_gcode
 from plotter.layout import PlacedText
-from plotter.stream import GrblStreamer
+from plotter.stream import GrblError, GrblStreamer
 
 # ------------------------------------------------------------ orientation --
 
@@ -110,8 +110,10 @@ def test_go_to_zero():
 
     port.written.clear()
     s.go_to_zero(feed=3000)
-    check("absolute move at an explicit feed",
-          port.written == ["G90", "G1 X0 Y0 F3000"], str(port.written))
+    # The pen lifts first: this can be a full-page diagonal, and doing it with
+    # the pen down rules a line straight across the operator's sheet.
+    check("the pen is lifted before the travel move",
+          port.written == ["M05 S10", "G90", "G1 X0 Y0 F3000"], str(port.written))
     check("position resets to origin", s.position == (0.0, 0.0), str(s.position))
 
 
@@ -148,9 +150,138 @@ def test_serial_port_ownership():
     srv._release_port_ownership(c)
 
 
+def test_silent_board_does_not_hang():
+    """'Zero here' once waited forever for an 'ok' the board never sent, so
+    the whole console froze. A reply has to arrive in time or it's an error."""
+    print("board that stops answering")
+
+    class SilentPort(RecordingPort):
+        def readline(self) -> bytes:
+            return b""
+
+    s = GrblStreamer(port="FAKE", transport=SilentPort(), reply_timeout=0.2)
+    try:
+        s.set_zero()
+        check("no reply raises instead of hanging", False, "set_zero returned")
+    except GrblError as e:
+        check("no reply raises instead of hanging", "No reply" in str(e), str(e))
+
+    class ClosedMidRead(RecordingPort):
+        def readline(self) -> bytes:
+            # what pyserial on Windows does when another tab closes the handle
+            self.is_open = False
+            raise AttributeError("'NoneType' object has no attribute 'hEvent'")
+
+    s = GrblStreamer(port="FAKE", transport=ClosedMidRead())
+    try:
+        s.set_zero()
+        check("port closed mid-read gives a readable error", False, "set_zero returned")
+    except GrblError as e:
+        check("port closed mid-read gives a readable error", "Connection closed" in str(e), str(e))
+
+
+def test_cancel_stops_cleanly():
+    """Cancel used to hang for good if the job was paused, and otherwise left
+    real GRBL frozen in a feed hold with moves still queued."""
+    print("cancel")
+    import threading
+    import time
+
+    # The pause has to land *during* the stream: stream() deliberately clears a
+    # stale pause left set by an earlier job before it sends its first line.
+    class PauseAfterFirstLine(RecordingPort):
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            if len(self.written) == 1:
+                s.pause()
+
+    port = PauseAfterFirstLine()
+    s = GrblStreamer(port="FAKE", transport=port)
+    result = []
+    t = threading.Thread(target=lambda: result.append(s.stream("G1 X1\nG1 X2\nG1 X3\n")), daemon=True)
+    t.start()
+    time.sleep(0.3)
+    check("a paused job holds instead of finishing", not result, str(result))
+    s.cancel()
+    t.join(timeout=2)
+    check("cancel while paused doesn't hang", not t.is_alive())
+    check("a cancelled job reports it didn't finish", result == [False], str(result))
+    check("the hold is released so the machine can finish its moves", "~" in port.written, str(port.written))
+    check("waits for the machine to stop moving (G4 sync)", port.written[-1:] == ["G4 P0"], str(port.written))
+    check("nothing after the paused line is sent", "G1 X2" not in port.written, str(port.written))
+
+    class CancelAfterTwo(RecordingPort):
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            if len(self.written) == 2:
+                s2.cancel()
+
+    port2 = CancelAfterTwo()
+    s2 = GrblStreamer(port="FAKE", transport=port2)
+    done = s2.stream("G1 X1\nG1 X2\nG1 X3\nG1 X4\n")
+    check("cancel mid-job stops sending and waits for the machine",
+          port2.written == ["G1 X1", "G1 X2", "G4 P0"], str(port2.written))
+    check("cancel mid-job reports it didn't finish", done is False)
+    check("no feed hold left behind", "!" not in port2.written, str(port2.written))
+
+
+def test_pause_does_not_time_out():
+    """A feed hold stops GRBL acking queued moves. Counting that against the
+    no-reply timeout killed a job just because the operator paused it to look
+    at the pen."""
+    print("a long pause is not a dead board")
+    import threading
+    import time
+
+    class HeldBoard(RecordingPort):
+        """A held GRBL: it stops answering until the hold is released."""
+
+        def write(self, data: bytes) -> None:
+            super().write(data)
+            if len(self.written) == 1:
+                s.pause()
+
+        def readline(self) -> bytes:
+            return b"" if s._paused else b"ok"
+
+    port = HeldBoard()
+    s = GrblStreamer(port="FAKE", transport=port, reply_timeout=0.3)
+    result = []
+    t = threading.Thread(target=lambda: result.append(s.stream("G1 X1\nG1 X2")), daemon=True)
+    t.start()
+    time.sleep(0.9)  # three times the reply timeout, still held
+    check("a pause longer than the reply timeout doesn't fail the job", not result, str(result))
+    s.resume()
+    t.join(timeout=3)
+    check("the job carries on after resume", result == [True], str(result))
+
+
+def test_pen_state_is_not_guessed():
+    """Nothing reads the servo back, so before anything drives it the console
+    must not claim to know where the pen is - it used to assert "pen up"."""
+    print("pen state is known only once driven")
+    s = GrblStreamer(port="FAKE", transport=RecordingPort())
+    check("pen state starts unknown", s.is_pen_known is False)
+    s.pen_down("M05", 10)
+    check("driving the servo makes it known", s.is_pen_known is True and s.is_pen_down is True)
+
+    # With swap_pen the job gcode LIFTS with M03, so tracking that assumed
+    # M03 = down reported the pen (and the simulator's draw/travel split)
+    # backwards for this machine.
+    machine = MachineConfig(swap_pen=True)
+    s2 = GrblStreamer(port="FAKE", transport=RecordingPort())
+    s2.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
+    s2._track_line("M03 S50")
+    check("M03 is a pen LIFT on this machine", s2.is_pen_down is False)
+    s2._track_line("M05 S10")
+    check("M05 is a pen DROP on this machine", s2.is_pen_down is True)
+
+
 def main() -> int:
     run([test_page_orientation, test_pen_mapping, test_servo_values_are_sent,
-         test_go_to_zero, test_serial_port_ownership])
+         test_go_to_zero, test_serial_port_ownership, test_silent_board_does_not_hang,
+         test_cancel_stops_cleanly, test_pause_does_not_time_out,
+         test_pen_state_is_not_guessed])
     return report()
 
 

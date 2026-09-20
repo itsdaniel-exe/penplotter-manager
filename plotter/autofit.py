@@ -29,14 +29,15 @@ MIN_FONT_MM = 2.2   # below this a stroke font stops being legible on paper
 STEP_MM = 0.1       # search resolution; finer than the pen can resolve anyway
 
 
-def _pages_needed(text: str, page: PageConfig, style: TextStyle, size_mm: float) -> int:
-    """How many pages `text` needs at `size_mm`."""
+def _pages_needed(text: str, page: PageConfig, style: TextStyle, size_mm: float,
+                  spacing_mm: float | None = None) -> int:
+    """How many pages `text` needs at `size_mm` and `spacing_mm`."""
     font = load_font(style.font)
     scale = size_mm / font.units_per_em
     max_width_units = page.content_width_mm / scale
     lines = wrapped_lines(text, font, max_width_units)
 
-    spacing = size_mm * LINE_SPACING_RATIO
+    spacing = spacing_mm if spacing_mm is not None else size_mm * LINE_SPACING_RATIO
     lines_per_page = int(page.content_height_mm // spacing)
     if lines_per_page < 1:
         return 10**6  # doesn't fit at all at this size
@@ -66,8 +67,13 @@ def fit_font_size(
     # still only ~50 iterations.
     size = max_font_mm
     while size >= min_font_mm:
-        if _pages_needed(text, page, style, size) <= target_pages:
-            return round(size, 2), round(size * LINE_SPACING_RATIO, 2)
+        # Check the values that will actually be used. Rounding after the test
+        # can round the spacing DOWN and the size UP, which fitted on paper by
+        # luck rather than by arithmetic.
+        rounded = round(size, 2)
+        spacing = round(rounded * LINE_SPACING_RATIO, 2)
+        if _pages_needed(text, page, style, rounded, spacing) <= target_pages:
+            return rounded, spacing
         size -= STEP_MM
 
     return round(min_font_mm, 2), round(min_font_mm * LINE_SPACING_RATIO, 2)

@@ -15,7 +15,9 @@ from pathlib import Path
 
 from lxml import etree
 
-FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+from .paths import fonts_dir
+
+FONTS_DIR = fonts_dir()
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 
@@ -42,6 +44,19 @@ class Font:
 
     def glyph(self, ch: str) -> Glyph | None:
         return self.glyphs.get(ch) or self.glyphs.get(" ")
+
+    def missing(self, text: str) -> list[str]:
+        """Characters this font cannot draw, in order of first appearance.
+
+        They fall back to the space glyph, so they vanish from the page
+        silently - the caller is expected to tell the operator."""
+        seen, out = set(), []
+        for ch in text:
+            if ch in seen or ch in self.glyphs or ch in ("\n", "\r"):
+                continue
+            seen.add(ch)
+            out.append(ch)
+        return out
 
     def advance(self, ch: str) -> float:
         g = self.glyphs.get(ch)
@@ -139,7 +154,10 @@ def parse_path(d: str) -> list[list[tuple[float, float]]]:
             if current and current[0] != pos:
                 current.append(start)
             pos = start
-            i += 1
+            # The command token was already consumed at the top of the loop.
+            # Skipping another one here swallowed the next subpath's moveto,
+            # which drew a stray line across the letter.
+            cmd = None
         else:
             # Unexpected token; skip to avoid infinite loop.
             i += 1

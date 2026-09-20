@@ -38,7 +38,8 @@ _COORD_RE = re.compile(r"([XYFSP])(-?[\d.]+)")
 
 class FakeGrblPort:
     def __init__(self, bed_width_mm: float | None = None, bed_height_mm: float | None = None,
-                 speed_factor: float | None = None):
+                 speed_factor: float | None = None,
+                 pen_up_cmd: str = "M05", pen_down_cmd: str = "M03"):
         """`speed_factor`: if set, actually sleeps a scaled-down fraction of
         each move's real duration (real_seconds / speed_factor), so a live
         "Run" against this fake port behaves like a real job in fast-forward
@@ -49,6 +50,12 @@ class FakeGrblPort:
         self.bed_width_mm = bed_width_mm
         self.bed_height_mm = bed_height_mm
         self.speed_factor = speed_factor
+        # Which command lowers the pen on the machine being simulated. This
+        # board is wired swap_pen, so its gcode lifts with M03 - assuming
+        # M03 = down swapped the drawn and travelled distances, and made the
+        # playback animation trace the travel moves instead of the letters.
+        self.pen_up_cmd = pen_up_cmd.upper()
+        self.pen_down_cmd = pen_down_cmd.upper()
         self.is_open = True
 
         self._queue: list[bytes] = []
@@ -80,8 +87,10 @@ class FakeGrblPort:
         if text == "$$":
             self._queue.extend(self._settings_dump())
             return
-        if text in ("!", "~", "\x18"):
-            self._queue.append(b"ok\r\n")
+        if text in ("!", "~", "?", "\x18"):
+            # Real-time commands: real GRBL acts on them instantly and never
+            # replies 'ok'. A fake 'ok' gets taken as the ack for whatever
+            # line the stream is waiting on.
             return
         self._handle_line(text)
 
@@ -112,11 +121,11 @@ class FakeGrblPort:
     def _handle_line(self, line: str):
         upper = line.upper()
 
-        if upper.startswith("M03"):
+        if upper.startswith(self.pen_down_cmd):
             self._pen_down = True
             self._queue.append(b"ok\r\n")
             return
-        if upper.startswith("M05"):
+        if upper.startswith(self.pen_up_cmd):
             self._pen_down = False
             self._queue.append(b"ok\r\n")
             return

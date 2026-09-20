@@ -80,6 +80,61 @@ the paper — moving the paper after zeroing misplaces the text.
 - **Jog arrows moved opposite to their labels.** They now derive direction from
   `invert_x`/`invert_y`, so they move the way they point and stay correct if the
   machine is ever rewired.
+- **Console froze after "Zero here"** — `_send_and_wait()` looped forever if the board
+  never sent `ok`, so the button hung with no message. Reloading and reconnecting then
+  closed the stuck handle mid-read, crashing that session (pyserial's `hEvent`
+  AttributeError). Replies now time out after 30s with a readable error, a closed port
+  says so, Zero/Pen up/Pen down errors reach the log instead of killing the socket, and
+  closed tabs no longer leak a server thread. *Why* the board didn't answer that `G92`
+  is still unknown.
+- **Cancel didn't stop, Disconnect looked dead.** Cancel while paused spun forever in the
+  pause loop (and blocked server shutdown). Cancel otherwise sent `!` and walked away,
+  leaving GRBL frozen in a feed hold with moves queued and the pen down. Disconnect
+  worked server-side, but the page only logged it — button and status never changed.
+  Cancel now stops sending, releases any hold, waits on `G4 P0` (acked only once the
+  buffer has drained) and lifts the pen. Disconnect, reconnect and closing the tab
+  do the same first. **Don't switch Cancel to a soft reset (`0x18`)**: GRBL's
+  `gc_init()` zeroes the G92 offset on reset, so it would wipe "Zero here". Trade-off:
+  Cancel isn't an e-stop — the machine finishes the few short moves it already accepted.
+  Verified on the simulator only; not yet on the real machine.
+- **Pen up/down was tracked backwards on this machine.** `stream.py` and the simulator
+  both hardcoded `M03 = pen down`, but with `swap_pen` the job gcode LIFTS with M03. So
+  the live pen badge was inverted for a whole run, the simulator swapped its drawn and
+  travelled distances (168mm of ink reported as 434mm), and the Simulate animation traced
+  the travel moves instead of the letters. Both now take the mapping from `MachineConfig`
+  (`set_pen_mapping`), and the streamer reports `pen ?` until something has actually
+  driven the servo, because nothing reads it back.
+- **A page that failed mid-stream left the pen on the paper** and the console stuck on
+  "Running" with live Pause/Cancel. The error path now lifts the pen and ends the job.
+- **Jog / Pen / Zero / Go to zero stayed live during a run**, so a click mid-page wrote
+  into the same serial port the job was streaming to — a `G92` there re-zeros the rest of
+  the page. Blocked server-side and disabled in the UI while a job runs.
+- **A multi-page job drew every page on the same sheet.** It now stops after each page
+  and waits for the operator to confirm a fresh one.
+- **Nothing bounds-checked a real run** — only the simulator did. Jobs are now checked
+  against the measured work area before the pen moves, with an explicit override.
+- **A second tab taking the port killed a running job's handle mid-stroke.** The takeover
+  now cancels the job, waits for the pen to lift, and tells the losing tab (which used to
+  sit there showing "connected" with every button silently doing nothing).
+- **Pausing for more than 30s failed the job** with a bogus "check the USB cable": a feed
+  hold stops GRBL acking, and that counted against the no-reply timeout. A pause no longer
+  counts. A pause left set by an earlier job also used to hold the next one silently.
+- **"Go to zero" travelled with the pen down**, ruling a line across the sheet.
+- **Word's punctuation vanished from the page.** A stroke font has no curly apostrophe and
+  `Font.glyph()` falls back to the space glyph, so "don't" plotted as "don t". Typographic
+  characters are substituted; anything still undrawable is reported after a Preview.
+- **A word too long for the line ran off the sheet** (and off the rails) instead of being
+  broken.
+- **SVG import**: arc commands were never tokenised, so an `A` dropped its letter and fed
+  seven numbers to the previous command; a `Z` swallowed the next subpath's moveto (same
+  bug in the glyph parser); `transform` attributes were ignored entirely; `<defs>` and
+  hidden elements were plotted; `width="100%"` failed the whole upload. All fixed, and
+  `<text>` is now reported rather than silently dropped.
+- **docPath/svgPath were unvalidated server-side paths**, so a crafted request could have
+  the console read and plot any file the account could open. Confined to `jobs/uploads`,
+  which is also pruned now.
+- **Bad input surfaced as "Internal Server Error"** (a zero font size raised
+  ZeroDivisionError). Preview/Simulate now return the actual reason.
 - **Canvas sized itself from a container measured before layout settled**, and `hidden`
   lost to CSS `display: flex/grid`. Both fixed (ResizeObserver; `[hidden]` override).
 

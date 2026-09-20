@@ -67,6 +67,25 @@ give the same page.
 Both are available from the CLI too — `--auto-fit`, `--handwriting`,
 `--hand-amount`, `--hand-seed`.
 
+### While a job runs
+
+A run takes the machine over completely: jog, pen, zero and unlock lock
+themselves until it finishes, because a stray move lands in the middle of the
+page. Pause, Resume and Cancel stay live. Cancel lets the machine finish the
+few moves it already accepted, then lifts the pen — it isn't an emergency
+stop, so for that, cut the power.
+
+A job with more than one page stops after each sheet and waits. Every page is
+drawn from the same zero, so without that it would draw page 2 on top of
+page 1. Load the next sheet against the same corner and press the button.
+
+Before anything moves, the job is checked against the measured work area. If
+it runs outside, the run is blocked and tells you by how much — there are no
+limit switches, so the alternative is the carriage hitting its end stops. You
+can override it if you know better.
+
+Closing the tab or refreshing mid-job stops the plot. The browser asks first.
+
 ### Work area
 
 Defaults to 195×300mm, measured on the real machine by jogging to opposite
@@ -76,7 +95,12 @@ this project existed — two independent measurements, so it's trustworthy.
 
 To re-measure (if the machine's rebuilt or re-tensioned): open Settings, jog
 to one corner, click **Mark corner A**, jog to the diagonally opposite corner,
-click **Mark corner B** — width/height fill in automatically. Stop jogging at
+click **Mark corner B** — width/height fill in automatically. Arrow keys jog
+too, so you can line the paper up without going back to the mouse.
+
+Pen up/down is shown as `pen ?` until something in the session actually drives
+the servo. Nothing reads it back from the machine, so before that it would be
+a guess. Stop jogging at
 the first sign of resistance: there are no limit switches, and if the belt
 slips while the motor keeps turning, the software counts millimetres that
 never happened and you get a work area larger than reality.
@@ -110,6 +134,42 @@ G-code dialect (servo commands, feed rates) was reverse-engineered from the
 real files in `RUN PEN PLOTTER/Gcode/*.gcode` and the `4xiDraw_servo`
 Inkscape extension's defaults, so it matches your machine's calibration out
 of the box.
+
+## The app (for whoever has the machine)
+
+The console is also packaged as a single Windows program, so the person with
+the plotter doesn't need Python, a terminal or this repo.
+
+**Running it.** Download `PenPlotterConsole-<version>.exe` from the
+[releases page](https://github.com/itsdaniel-exe/penplotter-manager/releases)
+and double-click it. It opens in its own window. The first time, Windows will
+say "Windows protected your PC" because the file isn't signed with a paid
+certificate — click **More info**, then **Run anyway**. That's once, not every
+time.
+
+It keeps its settings, uploads, logs and diagnostics in
+`%LOCALAPPDATA%\PenPlotterConsole`, so nothing is written next to the exe.
+Only one copy runs at a time — Windows allows a single handle on a COM port,
+and two copies would fight over it.
+
+**When something goes wrong.** Click **Save diagnostics** next to the log. It
+writes one file with the version, the settings, the console log, the server
+log and which serial ports were visible, then opens the folder. Send that file.
+
+**Updates.** The app asks GitHub on launch whether a newer version exists and
+says so if there is one. It never downloads or installs anything by itself —
+you download the new exe and run it.
+
+### Building it
+
+```bash
+.venv\Scripts\python packaging/build.py
+```
+
+Puts `PenPlotterConsole.exe` and a version-stamped copy in `packaging/dist/`.
+Bump `__version__` in `plotter/__init__.py` first, then attach the stamped
+copy to a GitHub release tagged the same way (`v1.0.1`) — that tag is what the
+update check reads.
 
 ## Setup
 
@@ -180,8 +240,17 @@ exceed a bed size you give it:
 - `--text "..."` — typed/pasted text, wrapped and paginated automatically.
 - `--file document.pdf` / `.docx` / `.txt` — extracts the text, then same
   pipeline as `--text`.
-- `--svg design.svg` — an existing hand-made SVG (paths/lines/polylines/
-  rects), scaled and centered to fit the page as-is, no text layout.
+- `--svg design.svg` — an existing hand-made SVG, scaled and centered to fit
+  the page as-is, no text layout. Paths (including arcs and beziers), lines,
+  polylines, polygons, rects, circles and ellipses are drawn; group and
+  element `transform`s are applied; `<defs>`, clip paths and anything hidden
+  are skipped. `<text>` can't be plotted — convert it to paths first
+  (Inkscape: Path > Object to Path) and the console will say so if you forget.
+
+Typed text gets the punctuation Word inserts automatically — curly quotes,
+en/em dashes, ellipses — swapped for characters the stroke fonts actually
+have. Anything still undrawable is listed after a Preview rather than quietly
+vanishing from the page.
 
 ## Calibration (done — these are the real values)
 

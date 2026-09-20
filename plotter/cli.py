@@ -29,7 +29,9 @@ from .preview import render_svg
 from .simulator import FakeGrblPort
 from .stream import GrblStreamer, list_ports
 
-JOBS_DIR = Path(__file__).resolve().parent.parent / "jobs"
+from .paths import jobs_dir
+
+JOBS_DIR = jobs_dir()
 
 _BOUNDS_RE = re.compile(r"^([XY])=(-?[\d.]+) outside 0\.\.([\d.]+)mm bed (\w+)$")
 
@@ -295,6 +297,7 @@ def run_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape,
         return
 
     streamer = GrblStreamer(port, baud)
+    streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
     click.echo(f"Connecting to {port} @ {baud}...")
     banner = streamer.connect()
     click.echo(banner or "(connected)")
@@ -320,12 +323,30 @@ def run_cmd(text, doc_file, svg_file, page_size, width_mm, height_mm, landscape,
 
                 streamer.stream(code, on_progress=on_progress)
             click.echo(f"Page {i} done.")
+    except KeyboardInterrupt:
+        click.echo("\nStopping - letting the machine finish its buffered moves.")
+        streamer.cancel()
     finally:
+        _park_pen(streamer, machine)
         streamer.close()
 
 
-def _stream_gcode(code: str, port: str, baud: int):
+def _park_pen(streamer: GrblStreamer, machine: MachineConfig) -> None:
+    """Lift the pen before letting go of the port.
+
+    Ctrl-C part way through a page used to close the port with the pen still
+    down, leaving it parked on the paper bleeding a blot into the sheet.
+    """
+    try:
+        streamer.pen_up(*machine.pen_up_cmd_value)
+    except Exception:  # noqa: BLE001 - we are already on the way out
+        pass
+
+
+def _stream_gcode(code: str, port: str, baud: int, machine: MachineConfig | None = None):
+    machine = machine or MachineConfig()
     streamer = GrblStreamer(port, baud)
+    streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
     click.echo(f"Connecting to {port} @ {baud}...")
     banner = streamer.connect()
     click.echo(banner or "(connected)")
@@ -340,7 +361,11 @@ def _stream_gcode(code: str, port: str, baud: int):
                 last = prog.line_no
 
             streamer.stream(code, on_progress=on_progress)
+    except KeyboardInterrupt:
+        click.echo("\nStopping - letting the machine finish its buffered moves.")
+        streamer.cancel()
     finally:
+        _park_pen(streamer, machine)
         streamer.close()
 
 
