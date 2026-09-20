@@ -488,6 +488,7 @@ def api_notebook_preview(req: NotebookRequest):
             }
             for p in page.passes
         ],
+        "effort": notebook_effort(pages),
         "totals": [
             {"name": name, "lines": sum(pp.written_lines for pg in pages for pp in pg.passes
                                         if pp.name == name)}
@@ -736,19 +737,70 @@ def _notebook_page_config(nb: notebook_mod.NotebookConfig) -> PageConfig:
                       margin_left_mm=nb.margin_left_mm, margin_right_mm=nb.margin_right_mm)
 
 
-def _run_notebook_blocking(session: Session, machine: MachineConfig,
-                           pages: list, nb: notebook_mod.NotebookConfig, q: queue.Queue):
-    """Write a notebook: for each page, each pen in turn, then wait.
+def _pens_in_order(pages: list) -> list[tuple[str, str]]:
+    """Every pen that actually writes something, in the order first used."""
+    seen: list[tuple[str, str]] = []
+    for page in pages:
+        for placed in page.passes:
+            if placed.strokes and not any(name == placed.name for name, _ in seen):
+                seen.append((placed.name, placed.colour))
+    return seen
 
-    The operator is part of this loop - they swap the pen and turn the page -
-    so the thread blocks on them rather than running ahead. Everything is
-    written from the same zero: the notebook does not move between pages.
+
+def notebook_effort(pages: list) -> dict:
+    """How much operator work each order costs.
+
+    Worth knowing before starting: on a two-pen, 105-page record the two orders
+    differ by 200 pen changes.
+    """
+    pens = [name for name, _ in _pens_in_order(pages)]
+    used = [[pp.name for pp in pg.passes if pp.strokes] for pg in pages]
+
+    page_changes = 0
+    last: str | None = None
+    for names in used:
+        for name in names:
+            if name != last:
+                page_changes += 1
+                last = name
+    page_turns = max(0, sum(1 for names in used if names) - 1)
+
+    pen_changes = 0
+    pen_turns = 0
+    for name in pens:
+        indexes = [i for i, names in enumerate(used) if name in names]
+        if not indexes:
+            continue
+        pen_changes += 1
+        pen_turns += indexes[-1] - indexes[0]
+
+    return {
+        "pageOrder": {"penChanges": page_changes, "pageTurns": page_turns},
+        "penOrder": {"penChanges": pen_changes, "pageTurns": pen_turns,
+                     "returnsToStart": max(0, len(pens) - 1)},
+    }
+
+
+def _run_notebook_blocking(session: Session, machine: MachineConfig,
+                           pages: list, nb: notebook_mod.NotebookConfig, q: queue.Queue,
+                           order: str = "page"):
+    """Write a notebook. The operator is part of this loop - they change the pen
+    and turn the page - so the thread blocks on them rather than running ahead.
+
+    Two orders, and on a long record the difference is hours of standing there:
+
+    * `page` - finish a page in every pen, then turn it. The notebook only ever
+      moves forward, but each pen is swapped on every page.
+    * `pen` - take one pen through the whole notebook, then go back to the first
+      page and do the next pen. Two pen changes instead of two hundred, at the
+      cost of turning every page once per pen.
+
+    Everything is written from the same zero either way: the notebook does not
+    move, and the pen has to go back into the holder at the same height.
     """
     streamer = session.streamer
     streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
-    page_config = _notebook_page_config(nb)
     total_pages = len(pages)
-    current_pen: str | None = None
 
     def lift_pen(why: str) -> None:
         try:
@@ -768,6 +820,89 @@ def _run_notebook_blocking(session: Session, machine: MachineConfig,
                 return False
         return True
 
+    def write_pass(page, placed) -> str:
+        """Stream one pen's lines for one page. Returns ok / error / cancelled."""
+        code = gcode_mod.strokes_to_gcode(
+            PlacedText(strokes=placed.strokes, page_index=page.index),
+            nb.page_height_mm, machine, nb.page_width_mm,
+        )
+        last_sent = 0.0
+
+        def on_progress(prog):
+            nonlocal last_sent
+            now = time.time()
+            if prog.line_no < prog.total_lines and (now - last_sent) < 0.08:
+                return
+            last_sent = now
+            pos = streamer.position
+            q.put({
+                "type": "progress",
+                "page": page.index + 1, "totalPages": total_pages,
+                "line": prog.line_no, "totalLines": prog.total_lines,
+                "pen": placed.name,
+                "x": pos[0], "y": pos[1], "penDown": streamer.is_pen_down,
+            })
+
+        try:
+            completed = streamer.stream(code, on_progress=on_progress)
+        except Exception as e:  # noqa: BLE001
+            q.put({"type": "error", "message": str(e)})
+            lift_pen("The job stopped")
+            return "error"
+        if not completed:
+            lift_pen("Stopped")
+            return "cancelled"
+        q.put({"type": "passComplete", "page": page.index + 1, "totalPages": total_pages,
+               "pen": placed.name, "lines": placed.written_lines})
+        return "ok"
+
+    def finish_page(page) -> None:
+        lift_pen("Page finished")
+        q.put({"type": "pageComplete", "page": page.index + 1, "totalPages": total_pages,
+               "boundsWarnings": [], "cancelled": False})
+
+    def stopped() -> None:
+        q.put({"type": "jobComplete", "cancelled": True})
+
+    if order == "pen":
+        at_page = 0
+        for pen_no, (pen_name, colour) in enumerate(_pens_in_order(pages)):
+            todo = [pg for pg in pages
+                    if any(pp.name == pen_name and pp.strokes for pp in pg.passes)]
+            if not todo:
+                continue
+
+            lift_pen("Pen change")
+            if not wait_for_operator({
+                "type": "penChange", "pen": pen_name, "colour": colour,
+                "page": todo[0].index + 1, "totalPages": total_pages,
+                "returnToStart": pen_no > 0,
+            }):
+                stopped()
+                return
+            at_page = todo[0].index
+
+            for page in todo:
+                if page.index > at_page:
+                    if not wait_for_operator({
+                        "type": "pageWait", "page": at_page + 1, "totalPages": total_pages,
+                        "notebook": True, "turns": page.index - at_page,
+                        "nextPage": page.index + 1, "pen": pen_name,
+                    }):
+                        stopped()
+                        return
+                    at_page = page.index
+
+                placed = next(pp for pp in page.passes if pp.name == pen_name)
+                if write_pass(page, placed) != "ok":
+                    stopped()
+                    return
+                finish_page(page)
+
+        q.put({"type": "jobComplete", "cancelled": False})
+        return
+
+    current_pen: str | None = None
     for page in pages:
         for placed in page.passes:
             if not placed.strokes:
@@ -779,56 +914,21 @@ def _run_notebook_blocking(session: Session, machine: MachineConfig,
                     "type": "penChange", "pen": placed.name, "colour": placed.colour,
                     "page": page.index + 1, "totalPages": total_pages,
                 }):
-                    q.put({"type": "jobComplete", "cancelled": True})
+                    stopped()
                     return
                 current_pen = placed.name
 
-            code = gcode_mod.strokes_to_gcode(
-                PlacedText(strokes=placed.strokes, page_index=page.index),
-                nb.page_height_mm, machine, nb.page_width_mm,
-            )
-            total_lines = len([ln for ln in code.splitlines() if ln.strip()])
-            last_sent = 0.0
-
-            def on_progress(prog, page=page, placed=placed):
-                nonlocal last_sent
-                now = time.time()
-                if prog.line_no < prog.total_lines and (now - last_sent) < 0.08:
-                    return
-                last_sent = now
-                pos = streamer.position
-                q.put({
-                    "type": "progress",
-                    "page": page.index + 1, "totalPages": total_pages,
-                    "line": prog.line_no, "totalLines": prog.total_lines,
-                    "pen": placed.name,
-                    "x": pos[0], "y": pos[1], "penDown": streamer.is_pen_down,
-                })
-
-            try:
-                completed = streamer.stream(code, on_progress=on_progress)
-            except Exception as e:  # noqa: BLE001
-                q.put({"type": "error", "message": str(e)})
-                lift_pen("The job stopped")
-                q.put({"type": "jobComplete", "cancelled": True})
+            if write_pass(page, placed) != "ok":
+                stopped()
                 return
 
-            if not completed:
-                lift_pen("Stopped")
-                q.put({"type": "jobComplete", "cancelled": True})
-                return
-
-            q.put({"type": "passComplete", "page": page.index + 1, "totalPages": total_pages,
-                   "pen": placed.name, "lines": placed.written_lines})
-
-        lift_pen("Page finished")
-        q.put({"type": "pageComplete", "page": page.index + 1, "totalPages": total_pages,
-               "boundsWarnings": [], "cancelled": False})
+        finish_page(page)
 
         if page.index + 1 < total_pages:
             if not wait_for_operator({"type": "pageWait", "page": page.index + 1,
-                                      "totalPages": total_pages, "notebook": True}):
-                q.put({"type": "jobComplete", "cancelled": True})
+                                      "totalPages": total_pages, "notebook": True,
+                                      "turns": 1, "nextPage": page.index + 2}):
+                stopped()
                 return
 
     q.put({"type": "jobComplete", "cancelled": False})
@@ -1043,8 +1143,9 @@ async def ws_session(websocket: WebSocket):
                 for w in warnings:
                     q.put({"type": "error", "message": w})
                 q.put({"type": "jobStarted", "totalPages": len(pages), "notebook": True})
+                order = "pen" if msg.get("order") == "pen" else "page"
                 session.job = loop.run_in_executor(
-                    None, _run_notebook_blocking, session, machine, pages, nb, q
+                    None, _run_notebook_blocking, session, machine, pages, nb, q, order
                 )
 
             elif action == "run" and session.streamer:

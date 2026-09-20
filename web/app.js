@@ -20,6 +20,9 @@ const DEFAULTS = {
   notebook: {
     pageWidthMm: 210, pageHeightMm: 297, marginLeftMm: 25, marginRightMm: 12,
     firstLineMm: 30, lineSpacingMm: 8, linesPerPage: 24,
+    // "page": finish each page in every pen, then turn it.
+    // "pen": one pen through the whole notebook, then back to the start.
+    order: "page",
   },
   pens: [
     { name: "Black pen", colour: "#1b1b1b" },
@@ -239,6 +242,7 @@ function applyStateToForm() {
   $("nbFirstLine").value = state.notebook.firstLineMm;
   $("nbSpacing").value = state.notebook.lineSpacingMm;
   $("nbLines").value = state.notebook.linesPerPage;
+  $("nbOrder").value = state.notebook.order || "page";
   state.pens.forEach((pen, i) => {
     $("penName" + i).value = pen.name;
     $("penColour" + i).value = pen.colour;
@@ -279,6 +283,7 @@ function readFormIntoState() {
   state.notebook.firstLineMm = num("nbFirstLine");
   state.notebook.lineSpacingMm = num("nbSpacing");
   state.notebook.linesPerPage = Math.max(1, Math.round(num("nbLines")));
+  state.notebook.order = $("nbOrder").value;
   state.pens = state.pens.map((pen, i) => ({
     name: $("penName" + i).value || `Pen ${i + 1}`,
     colour: $("penColour" + i).value || pen.colour,
@@ -576,7 +581,7 @@ function notebookJobPayload(page) {
     passes: state.pens.map((pen, i) => ({
       name: pen.name, colour: pen.colour, docPath: state.penDocs[i],
     })).filter((p) => p.docPath),
-    notebook: { ...state.notebook },
+    notebook: (({ order, ...rest }) => rest)(state.notebook),
     style: currentStylePayload(),
     hand: currentHandPayload(),
     page,
@@ -617,6 +622,7 @@ async function doNotebookPreview(page = 0) {
 
     $("warnBox").hidden = !(data.warnings && data.warnings.length);
     if (data.warnings && data.warnings.length) $("warnBox").textContent = data.warnings.join(" ");
+    showOrderCost(data.effort);
 
     if (page === 0) {
       const totals = data.totals.map((t) => `${t.name} ${t.lines}`).join(", ");
@@ -627,6 +633,21 @@ async function doNotebookPreview(page = 0) {
   } catch (e) {
     log("Notebook preview failed: " + e.message, "warn");
   }
+}
+
+/** Standing at the machine, the difference between the two orders is hours:
+ *  on a 105-page record it is 210 pen changes against 2. Say so plainly rather
+ *  than making the operator work it out. */
+function showOrderCost(effort) {
+  if (!effort) return;
+  const page = effort.pageOrder;
+  const pen = effort.penOrder;
+  const backs = pen.returnsToStart
+    ? `, and ${pen.returnsToStart} trip back to the first page`
+    : "";
+  $("nbOrderNote").textContent =
+    `Page by page: ${page.penChanges} pen changes, ${page.pageTurns} page turns. `
+    + `One pen at a time: ${pen.penChanges} pen changes, ${pen.pageTurns} page turns${backs}.`;
 }
 
 /** Draw one notebook page: the rules and margin it will be written on, then
@@ -1060,8 +1081,16 @@ function handleWsMessage(msg) {
         ? "Page turned - write the next one"
         : "Sheet loaded - plot the next page";
       $("paperPromptText").textContent = msg.notebook
-        ? `Page ${msg.page} of ${msg.totalPages} is written. Turn to the next page, leaving the `
-          + "notebook exactly where it is - every page is written from the same zero."
+        ? (msg.pen
+            // one pen at a time: the page is not finished, this pen is
+            ? ((msg.turns || 1) > 1
+                ? `The ${msg.pen} is done on page ${msg.page}. Turn forward ${msg.turns} pages, `
+                  + `to page ${msg.nextPage} of ${msg.totalPages} - this pen has nothing to write `
+                  + "on the ones in between. Leave the notebook where it is."
+                : `The ${msg.pen} is done on page ${msg.page} of ${msg.totalPages}. Turn to page `
+                  + `${msg.nextPage}, leaving the notebook exactly where it is.`)
+            : `Page ${msg.page} of ${msg.totalPages} is written. Turn to the next page, leaving `
+              + "the notebook exactly where it is - every page is written from the same zero.")
         : `Page ${msg.page} of ${msg.totalPages} is done. Take that sheet off, load a fresh one `
           + "against the same zero, then continue. Every page is drawn from the same origin.";
       log(`Page ${msg.page} of ${msg.totalPages} finished - waiting for you.`, "ok");
@@ -1069,10 +1098,15 @@ function handleWsMessage(msg) {
     case "penChange":
       $("paperPrompt").hidden = false;
       $("nextPageBtn").textContent = "Pen is in - carry on";
-      $("paperPromptText").textContent =
-        `Put the ${msg.pen} in the holder for page ${msg.page} of ${msg.totalPages}, `
-        + "seat it at the same height as before, then continue.";
-      log(`Waiting for you to fit the ${msg.pen}.`, "ok");
+      $("paperPromptText").textContent = msg.returnToStart
+        ? `That pen is done. Go back to page ${msg.page} of ${msg.totalPages}, put the `
+          + `${msg.pen} in the holder at the same height, and leave the notebook exactly `
+          + "where it is - the writing is placed from the same zero."
+        : `Put the ${msg.pen} in the holder for page ${msg.page} of ${msg.totalPages}, `
+          + "seat it at the same height as before, then continue.";
+      log(msg.returnToStart
+        ? `Waiting for you to go back to page ${msg.page} and fit the ${msg.pen}.`
+        : `Waiting for you to fit the ${msg.pen}.`, "ok");
       break;
     case "passComplete":
       log(`${msg.pen}: ${msg.lines} line(s) written on page ${msg.page}.`, "ok");
@@ -1257,6 +1291,7 @@ function wireStaticControls() {
   });
   ["nbPageW", "nbPageH", "nbMarginL", "nbMarginR", "nbFirstLine", "nbSpacing", "nbLines"]
     .forEach((id) => $(id).addEventListener("input", refreshLayout));
+  $("nbOrder").addEventListener("change", refreshLayout);
 
   $("previewBtn").addEventListener("click", () => {
     if (state.inputMode === "notebook") doNotebookPreview(0); else doPreview();
@@ -1357,7 +1392,12 @@ function wireStaticControls() {
     readFormIntoState();
     if (state.jobRunning) return;  // the server refuses it too
     const payload = state.inputMode === "notebook"
-      ? { action: "runNotebook", notebookJob: notebookJobPayload(0), machine: currentMachinePayload() }
+      ? {
+          action: "runNotebook",
+          notebookJob: notebookJobPayload(0),
+          machine: currentMachinePayload(),
+          order: state.notebook.order,
+        }
       : {
           action: "run",
           input: currentInputPayload(), page: currentPagePayload(),

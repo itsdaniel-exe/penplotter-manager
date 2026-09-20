@@ -86,10 +86,20 @@ blue - and it is what keeps the two passes aligned. If a line is too wide and ha
 to be split, every other pen gets a blank line in the same place so nothing
 slides out of step.
 
-The machine then writes one pen at a time: it asks you to fit the first pen,
-writes that pen's lines for the page, asks for the next pen, writes those, then
-asks you to turn the page. Everything is written from the same zero, so leave the
-notebook where it is.
+The machine writes one pen at a time, and stops for you at each change. There
+are two orders, and on a long record the difference is hours of standing there:
+
+- **Page by page** &mdash; finish a page in every pen, then turn it. The notebook
+  only ever moves forward, but you swap pens constantly.
+- **One pen at a time** &mdash; take one pen through the whole notebook, then go
+  back to the first page and do the next pen. Far fewer pen changes, at the cost
+  of turning every page once per pen. Pages that pen has nothing on are skipped
+  in one go ("turn forward 3 pages, to page 48").
+
+Preview tells you exactly what each order costs for your document &mdash; for the
+105-page record this was built for, it is 186 pen changes against 2. Everything
+is written from the same zero either way, so leave the notebook where it is and
+put the pen back at the same height.
 
 Preview draws the page with its rules and margin, and the writing in each pen's
 colour, one page at a time. That is the only honest way to check your

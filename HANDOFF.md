@@ -151,9 +151,16 @@ ruled notebook.
   intended.
 - Text size is chosen from both constraints - the rule spacing (about 0.62x) and
   the writable width - whichever binds first, with a 2.2mm legible floor.
-- The run writes one pen per page, stopping for a pen change, then stops again
-  for the page turn. Every page is written from the same zero: the notebook does
-  not move.
+- The run has two orders, chosen in the console and passed to
+  `_run_notebook_blocking(..., order=)`:
+  - `page` - finish each page in every pen, then turn it.
+  - `pen` - one pen through the whole notebook, then back to the first page for
+    the next pen. Pages that pen has nothing on are skipped in a single prompt.
+  On the 105-page record this was built for: 186 pen changes versus 2, against
+  104 page turns versus 208. `notebook_effort()` computes both and the preview
+  shows them, because the choice is the operator's and it costs them hours.
+- Every page is written from the same zero: the notebook does not move, and the
+  pen goes back in the holder at the same height.
 - Preview fetches **one page at a time** (`/api/notebook/preview`, with the built
   pages cached server-side). A real record is 105 pages and about 250,000
   strokes; sending all of that to the browser at once is not an option.

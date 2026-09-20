@@ -128,11 +128,112 @@ def test_uploaded_paths_are_confined_to_the_uploads_folder():
     check("nothing supplied stays None", srv._safe_upload_path(None) is None)
 
 
+def _run_notebook(order: str) -> list[dict]:
+    """Run a small two-pen notebook job, answering every prompt immediately,
+    and return the messages the console would have received."""
+    from plotter.notebook import NotebookConfig, PenPass, build_notebook_pages
+
+    # pen A writes on pages 1 and 3, pen B on all three
+    nb = NotebookConfig(lines_per_page=2)
+    passes = [
+        PenPass("A", "#000", ["a1", "", "", "", "a3", ""]),
+        PenPass("B", "#00f", ["", "b1", "b2", "", "", "b3"]),
+    ]
+    pages, _ = build_notebook_pages(passes, nb, TextStyle(font_size_mm=3), None, auto_fit=False)
+
+    session = srv.Session()
+    session.streamer = GrblStreamer(port="FAKE", transport=RecordingPort())
+    q: queue.Queue = queue.Queue()
+
+    worker = threading.Thread(
+        target=srv._run_notebook_blocking,
+        args=(session, MachineConfig(), pages, nb, q, order),
+        daemon=True,
+    )
+    worker.start()
+
+    seen: list[dict] = []
+    deadline = time.time() + 20
+    while worker.is_alive() and time.time() < deadline:
+        try:
+            msg = q.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        seen.append(msg)
+        if msg["type"] in ("penChange", "pageWait"):
+            session.page_ready.set()      # the operator does as they are asked
+    worker.join(timeout=5)
+    while not q.empty():
+        seen.append(q.get_nowait())
+    return seen
+
+
+def test_page_order_finishes_each_page_before_turning():
+    print("order: page by page")
+    seen = _run_notebook("page")
+    pens = [m["pen"] for m in seen if m["type"] == "penChange"]
+    turns = [m for m in seen if m["type"] == "pageWait"]
+
+    check("the notebook only moves forward one page at a time",
+          all(m.get("turns", 1) == 1 for m in turns), str([m.get("turns") for m in turns]))
+    check("it turns the page twice for three pages", len(turns) == 2, str(len(turns)))
+    check("and swaps pen whenever the next pen differs", pens == ["A", "B", "A", "B"], str(pens))
+    check("nobody is ever asked to go back to the start",
+          not any(m.get("returnToStart") for m in seen if m["type"] == "penChange"))
+    check("the job finishes", any(m["type"] == "jobComplete" and not m["cancelled"] for m in seen))
+
+
+def test_pen_order_takes_one_pen_through_the_whole_notebook():
+    """Two pen changes instead of one per page - on a 105-page record that is
+    the difference between 2 swaps and 210."""
+    print("order: one pen at a time")
+    seen = _run_notebook("pen")
+    changes = [m for m in seen if m["type"] == "penChange"]
+    turns = [m for m in seen if m["type"] == "pageWait"]
+
+    check("each pen is fitted exactly once", [m["pen"] for m in changes] == ["A", "B"],
+          str([m["pen"] for m in changes]))
+    check("the second pen starts with a trip back to the first page",
+          changes[1]["returnToStart"] is True and changes[1]["page"] == 1, str(changes[1]))
+    check("pages this pen has nothing on are skipped in one go",
+          any(m.get("turns") == 2 for m in turns), str([m.get("turns") for m in turns]))
+    check("and the operator is told which page to land on",
+          all(m.get("nextPage") for m in turns), str(turns))
+    check("the job finishes", any(m["type"] == "jobComplete" and not m["cancelled"] for m in seen))
+
+    written = [(m["pen"], m["page"]) for m in seen if m["type"] == "passComplete"]
+    check("every pen writes every page it has content for",
+          written == [("A", 1), ("A", 3), ("B", 1), ("B", 2), ("B", 3)], str(written))
+
+
+def test_the_cost_of_each_order_is_reported():
+    """The console shows this before the job starts, so the choice is informed."""
+    print("what each order costs the operator")
+    from plotter.notebook import NotebookConfig, PenPass, build_notebook_pages
+
+    pages, _ = build_notebook_pages(
+        [PenPass("A", "#000", ["a1", "", "", "", "a3", ""]),
+         PenPass("B", "#00f", ["", "b1", "b2", "", "", "b3"])],
+        NotebookConfig(lines_per_page=2), TextStyle(font_size_mm=3), None, auto_fit=False)
+
+    effort = srv.notebook_effort(pages)
+    check("page order counts a change per pen per page",
+          effort["pageOrder"]["penChanges"] == 4, str(effort["pageOrder"]))
+    check("pen order counts one change per pen",
+          effort["penOrder"]["penChanges"] == 2, str(effort["penOrder"]))
+    check("pen order costs more page turns",
+          effort["penOrder"]["pageTurns"] > effort["pageOrder"]["pageTurns"], str(effort))
+    check("and one trip back to the start", effort["penOrder"]["returnsToStart"] == 1, str(effort))
+
+
 def main() -> int:
     run([test_failed_page_lifts_the_pen,
          test_multi_page_waits_for_a_fresh_sheet,
          test_bounds_are_checked_before_a_real_run,
-         test_uploaded_paths_are_confined_to_the_uploads_folder])
+         test_uploaded_paths_are_confined_to_the_uploads_folder,
+         test_page_order_finishes_each_page_before_turning,
+         test_pen_order_takes_one_pen_through_the_whole_notebook,
+         test_the_cost_of_each_order_is_reported])
     return report()
 
 

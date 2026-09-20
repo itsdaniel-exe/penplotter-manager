@@ -50,5 +50,8 @@ if __name__ == "__main__":
         test_console.test_multi_page_waits_for_a_fresh_sheet,
         test_console.test_bounds_are_checked_before_a_real_run,
         test_console.test_uploaded_paths_are_confined_to_the_uploads_folder,
+        test_console.test_page_order_finishes_each_page_before_turning,
+        test_console.test_pen_order_takes_one_pen_through_the_whole_notebook,
+        test_console.test_the_cost_of_each_order_is_reported,
     ])
     raise SystemExit(_harness.report())
