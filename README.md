@@ -120,8 +120,7 @@ commanded moves, not measured ones. After pushing the gantry by hand, click
 The CLI commands below still work standalone and are what the console
 calls under the hood.
 
-Replaces the manual workflow from `Creativity Buzz Writing Machine Software
-Download.pdf`:
+Replaces the manual workflow the machine ships with:
 
 - **Old**: Inkscape (Hershey Text extension, page setup) → 4xiDraw gcode
   extension → Universal G-code Sender → machine.
@@ -306,14 +305,12 @@ plotter/
   server.py     the web console (FastAPI + WebSocket live session, serial port ownership)
 web/            the console's frontend (index.html + app.js), served by server.py
 tests/          regression tests: machine calibration + text formatting
-fonts/          the Hershey/EMS SVG stroke fonts (copied from your existing setup)
+fonts/          the Hershey/EMS SVG stroke fonts
 jobs/           generated previews, gcode, and uploads land here (gitignored)
 ```
 
-## Next step: hooking up to HandScript
+## Next step
 
-This runs standalone for now. Once it's dialed in on real jobs, the natural
-next step is wiring it into the HandScript admin panel (`penplotter app/`)
-as an "IN_PRODUCTION" action — pull the order's uploaded file and page/paper
-settings, call this same pipeline, and log the result on the order timeline.
-Not built yet; ask when you're ready for that piece.
+This runs standalone. The pipeline in `plotter/jobs.py` is the seam to build on
+if it ever needs driving from another application: hand it the text or file and
+the page settings, and it returns laid-out pages ready to stream.

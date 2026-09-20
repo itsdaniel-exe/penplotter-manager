@@ -4,15 +4,12 @@ Paste this whole file into a new chat to pick up with full context.
 
 ## Who/what this is
 
-Daniel runs a business (**HandScript**, in `C:\Users\dabbe\Desktop\pen ploter business\penplotter app`
-— a separate Next.js/Prisma SaaS where customers pay to have documents "handwritten"
-by a pen plotter) and physically owns a DIY GRBL pen plotter (Arduino Uno + GRBL,
-CoreXY-style gantry, servo pen lift — a "4xiDraw" style build sold as a "Writing
-Machine" by the reseller Creativity Buzz). This project (`penplotter manager/`) is a
-**standalone local tool** that automates the machine's whole workflow, replacing the
-manual chain of Inkscape (Hershey Text + 4xiDraw gcode export) → Universal G-code
-Sender. It is **not** wired into the HandScript business app — that's explicitly
-deferred (see the bottom of `README.md`). Don't start it unless asked.
+This drives a DIY GRBL pen plotter: Arduino Uno running GRBL, CoreXY-style gantry,
+servo pen lift — a "4xiDraw" style build, sold in some places as a "Writing Machine".
+
+It is a **standalone local tool** that automates the machine's whole workflow,
+replacing the manual chain of Inkscape (Hershey Text + 4xiDraw gcode export) →
+Universal G-code Sender.
 
 ## Status: calibrated and working
 
@@ -150,22 +147,20 @@ machine settings, not the current job.
 
 ## Working style notes
 
-Daniel is hands-on with the hardware but not deep in the code, and got visibly
-frustrated when explanations ran long or jargon-heavy ("ur too confusinfg", "are you
-dumb"). What worked: **short numbered steps, one action at a time, plain words, no
-G-code jargon**, and doing the thinking rather than handing him options. He pushed back
-correctly on a slow manual process (jog-one-click-and-report) and asked for a proper
-calibration mode — the corner-marking tool exists because of that. When something can't
-be done (hand-drag tracking), say so plainly rather than building a lookalike.
+Write for someone standing at the machine, not at a terminal: **short numbered steps,
+one action at a time, plain words, no G-code jargon**. Prefer doing the thinking to
+handing over a list of options.
 
-Also: **no AI attribution in commits or repo files** — he is sole author.
+The corner-marking calibration exists because reporting jog positions by hand was too
+slow to be useful — that is the standard to hold new features to. When something is not
+possible (tracking the gantry being pushed by hand, for instance), say so plainly
+instead of building something that looks like it works.
 
-## Reference material (outside this repo)
+## Reference material (kept outside this repo)
 
-- `C:\Users\dabbe\Desktop\pen ploter business\RUN PEN PLOTTER\Gcode\*.gcode` — real
-  calibrated output from the old workflow. `bounndrycreation1_0001..0009` is the
-  original by-hand work-area search; the last three agree on 194.5 × 294.5mm.
-- `C:\Users\dabbe\Desktop\pen ploter business\4xiDraw & km laser\` — the original
-  Inkscape extension source the font parsing and gcode dialect came from.
-- `Creativity Buzz Writing Machine Software Download.pdf` — the reseller's setup PDF
-  (software only, no hardware detail).
+- The original `*.gcode` output from the old Inkscape + UGS workflow. The
+  `bounndrycreation1_0001..0009` files are the original by-hand work-area search; the
+  last three agree on 194.5 × 294.5mm.
+- The 4xiDraw Inkscape extension source, which the font parsing and gcode dialect came
+  from.
+- The reseller's setup PDF (software only, no hardware detail).
