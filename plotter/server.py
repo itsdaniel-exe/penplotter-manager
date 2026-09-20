@@ -28,10 +28,12 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import gcode as gcode_mod, jobs as jobs_mod
+from . import gcode as gcode_mod, jobs as jobs_mod, notebook as notebook_mod
 from .config import MachineConfig, PageConfig, TextStyle, PAGE_SIZES
+from . import extract
 from .fonts import list_fonts
 from .handwriting import HandStyle
+from .layout import PlacedText
 from .simulator import FakeGrblPort
 from .stream import GrblStreamer, list_ports
 
@@ -117,6 +119,26 @@ class MachineIn(BaseModel):
     swapPen: bool = True
     originXMm: float = 0.0
     originYMm: float = 0.0
+
+
+class NotebookIn(BaseModel):
+    """The physical notebook, measured with a ruler. Defaults are a standard
+    A4 ruled pad: 8mm ruling, 24 usable lines, printed margin at 25mm."""
+    pageWidthMm: float = 210.0
+    pageHeightMm: float = 297.0
+    marginLeftMm: float = 25.0
+    marginRightMm: float = 12.0
+    firstLineMm: float = 30.0
+    lineSpacingMm: float = 8.0
+    linesPerPage: int = 24
+
+
+class PenPassIn(BaseModel):
+    """One pen's lines. `docPath` is an uploaded document; `text` is typed."""
+    name: str = "Pen"
+    colour: str = "#1b1b1b"
+    docPath: Optional[str] = None
+    text: Optional[str] = None
 
 
 class BedIn(BaseModel):
@@ -360,6 +382,120 @@ def api_open_folder():
     return {"opened": str(folder)}
 
 
+# -------------------------------------------------------------- notebook --
+
+def _notebook_config(n: NotebookIn) -> notebook_mod.NotebookConfig:
+    return notebook_mod.NotebookConfig(
+        page_width_mm=n.pageWidthMm, page_height_mm=n.pageHeightMm,
+        margin_left_mm=n.marginLeftMm, margin_right_mm=n.marginRightMm,
+        first_line_mm=n.firstLineMm, line_spacing_mm=n.lineSpacingMm,
+        lines_per_page=n.linesPerPage,
+    )
+
+
+def _pen_passes(passes: list[PenPassIn]) -> list[notebook_mod.PenPass]:
+    """Read each pen's document into lines, keeping its own line breaks.
+
+    The documents are already wrapped to the page they were written for, and
+    those breaks are what keeps the pens aligned - re-flowing them would put
+    the headings against the wrong body text.
+    """
+    out = []
+    for p in passes:
+        if p.docPath:
+            text = extract.extract_text(_safe_upload_path(p.docPath))
+        else:
+            text = p.text or ""
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        out.append(notebook_mod.PenPass(name=p.name, colour=p.colour, lines=lines))
+    return out
+
+
+# Building 100+ notebook pages takes a couple of seconds, and the console asks
+# for them one at a time while the operator pages through the preview.
+_notebook_cache: dict[str, tuple] = {}
+
+
+def _notebook_pages(req: "NotebookRequest"):
+    key = req.model_dump_json(exclude={"page"})
+    cached = _notebook_cache.get(key)
+    if cached is not None:
+        return cached
+
+    passes = _pen_passes(req.passes)
+    if not any(any(line.strip() for line in p.lines) for p in passes):
+        raise HTTPException(status_code=400, detail="None of those files had any text in them.")
+
+    pages, warnings = notebook_mod.build_notebook_pages(
+        passes,
+        _notebook_config(req.notebook),
+        _style_config(req.style),
+        _hand_style(req.hand),
+        auto_fit=req.style.autoFit,
+    )
+    size_mm = notebook_mod.fit_font_size(passes, _notebook_config(req.notebook),
+                                         _style_config(req.style)) if req.style.autoFit \
+        else req.style.fontSizeMm
+    result = (pages, warnings, size_mm)
+    _notebook_cache.clear()  # one job at a time; this is a single-operator console
+    _notebook_cache[key] = result
+    return result
+
+
+class NotebookRequest(BaseModel):
+    passes: list[PenPassIn]
+    notebook: NotebookIn = NotebookIn()
+    style: StyleIn = StyleIn()
+    hand: HandIn = HandIn()
+    page: int = 0
+
+
+@app.post("/api/notebook/preview")
+def api_notebook_preview(req: NotebookRequest):
+    """One page at a time: a full record is 100+ pages and a quarter of a
+    million strokes, which is not something to hand a browser in one go."""
+    try:
+        pages, warnings, size_mm = _notebook_pages(req)
+    except Exception as e:  # noqa: BLE001
+        raise _as_http_error(e) from e
+
+    if not pages:
+        raise HTTPException(status_code=400, detail="That document produced no pages.")
+
+    index = max(0, min(req.page, len(pages) - 1))
+    page = pages[index]
+    nb = _notebook_config(req.notebook)
+    return {
+        "pageCount": len(pages),
+        "pageIndex": index,
+        "firstLineNo": page.first_line_no,
+        "lastLineNo": page.last_line_no,
+        "pageWidthMm": nb.page_width_mm,
+        "pageHeightMm": nb.page_height_mm,
+        "marginLeftMm": nb.margin_left_mm,
+        "marginRightMm": nb.margin_right_mm,
+        "firstLineMm": nb.first_line_mm,
+        "lineSpacingMm": nb.line_spacing_mm,
+        "linesPerPage": nb.lines_per_page,
+        "fontSizeMm": size_mm,
+        "warnings": warnings[:10],
+        "passes": [
+            {
+                "name": p.name,
+                "colour": p.colour,
+                "writtenLines": p.written_lines,
+                "strokes": [[[round(x, 3), round(y, 3)] for x, y in s] for s in p.strokes],
+            }
+            for p in page.passes
+        ],
+        "totals": [
+            {"name": name, "lines": sum(pp.written_lines for pg in pages for pp in pg.passes
+                                        if pp.name == name)}
+            for name in [p.name for p in pages[0].passes]
+        ],
+    }
+
+
 # --------------------------------------------------------------- preview --
 
 class PreviewRequest(BaseModel):
@@ -593,6 +729,111 @@ def _run_job_blocking(session: Session, machine: MachineConfig, pages, page: Pag
     q.put({"type": "jobComplete", "cancelled": False})
 
 
+def _notebook_page_config(nb: notebook_mod.NotebookConfig) -> PageConfig:
+    """The notebook page, described the way the gcode generator expects."""
+    return PageConfig(width_mm=nb.page_width_mm, height_mm=nb.page_height_mm,
+                      margin_top_mm=0.0, margin_bottom_mm=0.0,
+                      margin_left_mm=nb.margin_left_mm, margin_right_mm=nb.margin_right_mm)
+
+
+def _run_notebook_blocking(session: Session, machine: MachineConfig,
+                           pages: list, nb: notebook_mod.NotebookConfig, q: queue.Queue):
+    """Write a notebook: for each page, each pen in turn, then wait.
+
+    The operator is part of this loop - they swap the pen and turn the page -
+    so the thread blocks on them rather than running ahead. Everything is
+    written from the same zero: the notebook does not move between pages.
+    """
+    streamer = session.streamer
+    streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
+    page_config = _notebook_page_config(nb)
+    total_pages = len(pages)
+    current_pen: str | None = None
+
+    def lift_pen(why: str) -> None:
+        try:
+            streamer.pen_up(*machine.pen_up_cmd_value)
+        except Exception as e:  # noqa: BLE001
+            q.put({"type": "error", "message": f"{why}, but couldn't lift the pen: {e}"})
+        pos = streamer.position
+        q.put({"type": "position", "x": pos[0], "y": pos[1],
+               "pen": streamer.is_pen_down, "penKnown": streamer.is_pen_known})
+
+    def wait_for_operator(message: dict) -> bool:
+        """Block until the operator confirms. False if they cancelled instead."""
+        session.page_ready.clear()
+        q.put(message)
+        while not session.page_ready.wait(0.2):
+            if streamer.is_cancelled:
+                return False
+        return True
+
+    for page in pages:
+        for placed in page.passes:
+            if not placed.strokes:
+                continue
+
+            if placed.name != current_pen:
+                lift_pen("Pen change")
+                if not wait_for_operator({
+                    "type": "penChange", "pen": placed.name, "colour": placed.colour,
+                    "page": page.index + 1, "totalPages": total_pages,
+                }):
+                    q.put({"type": "jobComplete", "cancelled": True})
+                    return
+                current_pen = placed.name
+
+            code = gcode_mod.strokes_to_gcode(
+                PlacedText(strokes=placed.strokes, page_index=page.index),
+                nb.page_height_mm, machine, nb.page_width_mm,
+            )
+            total_lines = len([ln for ln in code.splitlines() if ln.strip()])
+            last_sent = 0.0
+
+            def on_progress(prog, page=page, placed=placed):
+                nonlocal last_sent
+                now = time.time()
+                if prog.line_no < prog.total_lines and (now - last_sent) < 0.08:
+                    return
+                last_sent = now
+                pos = streamer.position
+                q.put({
+                    "type": "progress",
+                    "page": page.index + 1, "totalPages": total_pages,
+                    "line": prog.line_no, "totalLines": prog.total_lines,
+                    "pen": placed.name,
+                    "x": pos[0], "y": pos[1], "penDown": streamer.is_pen_down,
+                })
+
+            try:
+                completed = streamer.stream(code, on_progress=on_progress)
+            except Exception as e:  # noqa: BLE001
+                q.put({"type": "error", "message": str(e)})
+                lift_pen("The job stopped")
+                q.put({"type": "jobComplete", "cancelled": True})
+                return
+
+            if not completed:
+                lift_pen("Stopped")
+                q.put({"type": "jobComplete", "cancelled": True})
+                return
+
+            q.put({"type": "passComplete", "page": page.index + 1, "totalPages": total_pages,
+                   "pen": placed.name, "lines": placed.written_lines})
+
+        lift_pen("Page finished")
+        q.put({"type": "pageComplete", "page": page.index + 1, "totalPages": total_pages,
+               "boundsWarnings": [], "cancelled": False})
+
+        if page.index + 1 < total_pages:
+            if not wait_for_operator({"type": "pageWait", "page": page.index + 1,
+                                      "totalPages": total_pages, "notebook": True}):
+                q.put({"type": "jobComplete", "cancelled": True})
+                return
+
+    q.put({"type": "jobComplete", "cancelled": False})
+
+
 @app.websocket("/ws/session")
 async def ws_session(websocket: WebSocket):
     await websocket.accept()
@@ -766,9 +1007,45 @@ async def ws_session(websocket: WebSocket):
                 except Exception as e:  # noqa: BLE001 - a dead port must not kill the socket
                     q.put({"type": "error", "message": f"{action.capitalize()} failed: {e}"})
 
-            elif action == "nextPage":
-                # Operator has loaded a fresh sheet; release the job thread.
+            elif action in ("nextPage", "continueJob"):
+                # Operator has changed the pen or loaded a fresh sheet.
                 session.page_ready.set()
+
+            elif action == "runNotebook" and session.streamer:
+                if session.job_running:
+                    q.put({"type": "error",
+                           "message": "A job is already running - Cancel it before starting another."})
+                    continue
+                try:
+                    req = NotebookRequest(**msg["notebookJob"])
+                    pages, warnings, _ = await loop.run_in_executor(None, _notebook_pages, req)
+                except Exception as e:  # noqa: BLE001
+                    q.put({"type": "error", "message": f"Could not build the notebook job: {e}"})
+                    continue
+
+                machine = _machine_config(MachineIn(**msg.get("machine", {})))
+                nb = _notebook_config(req.notebook)
+
+                if not msg.get("force"):
+                    page_config = _notebook_page_config(nb)
+                    sample = [PlacedText(strokes=[st for pp in pg.passes for st in pp.strokes],
+                                         page_index=pg.index)
+                              for pg in pages[:1]]
+                    bounds = await loop.run_in_executor(
+                        None, jobs_mod.bounds_warnings, sample, page_config, machine,
+                        session.bed_width_mm, session.bed_height_mm,
+                    )
+                    if bounds:
+                        q.put({"type": "boundsBlocked", "warnings": bounds[:20],
+                               "totalPages": len(pages)})
+                        continue
+
+                for w in warnings:
+                    q.put({"type": "error", "message": w})
+                q.put({"type": "jobStarted", "totalPages": len(pages), "notebook": True})
+                session.job = loop.run_in_executor(
+                    None, _run_notebook_blocking, session, machine, pages, nb, q
+                )
 
             elif action == "run" and session.streamer:
                 if session.job_running:

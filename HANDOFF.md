@@ -135,6 +135,31 @@ the paper — moving the paper after zeroing misplaces the text.
 - **Canvas sized itself from a container measured before layout settled**, and `hidden`
   lost to CSS `display: flex/grid`. Both fixed (ResizeObserver; `[hidden]` override).
 
+## Notebook mode (ruled pages, several pens)
+
+`plotter/notebook.py`, and the **Notebook** tab in the console. Built for lab
+records: a document exported as one file per pen colour, written into a bound
+ruled notebook.
+
+- The two (or more) documents are a **single line grid**. Line 12 is blue in one
+  file and blank in the other. `align_passes()` pads them to the same length and
+  `wrap_passes()` inserts a blank line into *every* pass when one line has to be
+  split - if the passes slide apart, the second pen writes its headings against
+  the wrong body text and the page is ruined in ink.
+- Pagination is by **line count**, not measured height: the notebook's rules
+  decide. Blank lines hold their slot, because that is the spacing the document
+  intended.
+- Text size is chosen from both constraints - the rule spacing (about 0.62x) and
+  the writable width - whichever binds first, with a 2.2mm legible floor.
+- The run writes one pen per page, stopping for a pen change, then stops again
+  for the page turn. Every page is written from the same zero: the notebook does
+  not move.
+- Preview fetches **one page at a time** (`/api/notebook/preview`, with the built
+  pages cached server-side). A real record is 105 pages and about 250,000
+  strokes; sending all of that to the browser at once is not an option.
+- The handwriting RNG is seeded per page and per pen, so the blue pass drawn ten
+  minutes after the black pass is still exactly what Preview showed.
+
 ## UI structure (rebuilt)
 
 Three columns: **job** (content, page, font; margins/placement collapsed), **stage**

@@ -116,6 +116,58 @@ def wrapped_lines(text: str, font: Font, max_width_units: float) -> list[str]:
     return lines
 
 
+def text_width_mm(line: str, font: Font, style: TextStyle, scale: float) -> float:
+    """Width of a rendered line in mm, including letter spacing."""
+    return font.text_width(line) * scale + max(0, len(line) - 1) * style.letter_spacing_mm
+
+
+def align_start_x(line: str, font: Font, style: TextStyle, scale: float,
+                  left_mm: float, content_width_mm: float) -> float:
+    """Where this line starts, given the alignment."""
+    if style.align == "center":
+        return left_mm + (content_width_mm - text_width_mm(line, font, style, scale)) / 2
+    if style.align == "right":
+        return left_mm + (content_width_mm - text_width_mm(line, font, style, scale))
+    return left_mm
+
+
+def place_line(
+    line: str,
+    font: Font,
+    style: TextStyle,
+    scale: float,
+    x_cursor: float,
+    baseline_y: float,
+    hand: Hand | None = None,
+    drift=None,
+    origin_x_mm: float = 0.0,
+) -> list[Stroke]:
+    """Draw one line of text as strokes, starting at `x_cursor` on `baseline_y`.
+
+    Shared by the free-flowing page layout and the notebook layout, so the two
+    cannot drift apart in how a line of handwriting is actually placed.
+    """
+    strokes: list[Stroke] = []
+    for ch in line:
+        glyph = font.glyph(ch)
+        if glyph is None:
+            x_cursor += font.default_horiz_adv_x * scale + style.letter_spacing_mm
+            continue
+
+        gstrokes = glyph.strokes
+        if hand and gstrokes:
+            gstrokes = hand.glyph_transform(gstrokes, font.units_per_em, glyph.horiz_adv_x)
+
+        y_here = baseline_y + (drift(x_cursor - origin_x_mm) if drift else 0.0)
+        for gstroke in gstrokes:
+            strokes.append([(x_cursor + gx * scale, y_here - gy * scale) for gx, gy in gstroke])
+
+        x_cursor += glyph.horiz_adv_x * scale + style.letter_spacing_mm
+        if hand:
+            x_cursor += hand.advance_jitter(ch == " ")
+    return strokes
+
+
 def layout_text(
     text: str,
     page: PageConfig,
@@ -169,39 +221,13 @@ def layout_text(
         strokes: list[Stroke] = []
         for row, line in enumerate(chunk):
             baseline_y = page.margin_top_mm + first_baseline_offset + row * style.line_spacing_mm
-            line_width_units = font.text_width(line)
-            line_width_mm = line_width_units * scale + max(0, len(line) - 1) * style.letter_spacing_mm
-
-            if style.align == "center":
-                x_cursor = page.margin_left_mm + (page.content_width_mm - line_width_mm) / 2
-            elif style.align == "right":
-                x_cursor = page.margin_left_mm + (page.content_width_mm - line_width_mm)
-            else:
-                x_cursor = page.margin_left_mm
-
+            x_cursor = align_start_x(line, font, style, scale,
+                                     page.margin_left_mm, page.content_width_mm)
             drift = h.line_baseline(page.content_width_mm) if h else None
             if h:
                 x_cursor += h.line_start_offset()
-
-            for ch in line:
-                glyph = font.glyph(ch)
-                if glyph is None:
-                    x_cursor += font.default_horiz_adv_x * scale + style.letter_spacing_mm
-                    continue
-
-                gstrokes = glyph.strokes
-                if h and gstrokes:
-                    gstrokes = h.glyph_transform(gstrokes, font.units_per_em, glyph.horiz_adv_x)
-
-                y_here = baseline_y + (drift(x_cursor - page.margin_left_mm) if drift else 0.0)
-                for gstroke in gstrokes:
-                    strokes.append(
-                        [(x_cursor + gx * scale, y_here - gy * scale) for gx, gy in gstroke]
-                    )
-
-                x_cursor += glyph.horiz_adv_x * scale + style.letter_spacing_mm
-                if h:
-                    x_cursor += h.advance_jitter(ch == " ")
+            strokes.extend(place_line(line, font, style, scale, x_cursor, baseline_y, h, drift,
+                                      origin_x_mm=page.margin_left_mm))
 
         index = len(pages)
         pages.append(PlacedText(strokes=strokes, page_index=index,

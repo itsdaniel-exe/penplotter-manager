@@ -67,6 +67,34 @@ give the same page.
 Both are available from the CLI too — `--auto-fit`, `--handwriting`,
 `--hand-amount`, `--hand-seed`.
 
+### Notebooks, and writing in more than one pen
+
+The **Notebook** tab is for writing into a bound, ruled notebook rather than onto
+loose sheets. Two things are different:
+
+**The lines already exist.** A notebook is pre-ruled, so the layout cannot pick
+its own spacing - every baseline has to land on a printed rule, and a page holds
+exactly as many lines as the notebook has. Measure your notebook once (page size,
+margins, distance to the first rule, the rule spacing, and how many lines you can
+actually reach) and the writing is sized to sit inside the ruling. Pagination is
+by line count, not by height.
+
+**A document can be written in several pens.** Give each pen its own document,
+with the same lines in the same places: where one file has a blank line, the
+other file writes. That is how a lab record works - headings in black, body in
+blue - and it is what keeps the two passes aligned. If a line is too wide and has
+to be split, every other pen gets a blank line in the same place so nothing
+slides out of step.
+
+The machine then writes one pen at a time: it asks you to fit the first pen,
+writes that pen's lines for the page, asks for the next pen, writes those, then
+asks you to turn the page. Everything is written from the same zero, so leave the
+notebook where it is.
+
+Preview draws the page with its rules and margin, and the writing in each pen's
+colour, one page at a time. That is the only honest way to check your
+measurements before putting ink into a notebook you cannot reprint.
+
 ### While a job runs
 
 A run takes the machine over completely: jog, pen, zero and unlock lock

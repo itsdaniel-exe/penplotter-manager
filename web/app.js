@@ -15,6 +15,16 @@ const DEFAULTS = {
   // test print; see HANDOFF.md before changing the defaults.
   machine: { servoUp: 10, servoDown: 50, travelFeed: 10000, drawFeed: 2500, invertY: false, invertX: true, swapPen: true },
   stepMm: "5",
+  // A standard A4 ruled pad. Measure your own with a ruler - the preview draws
+  // the rules so you can check before committing ink to a bound notebook.
+  notebook: {
+    pageWidthMm: 210, pageHeightMm: 297, marginLeftMm: 25, marginRightMm: 12,
+    firstLineMm: 30, lineSpacingMm: 8, linesPerPage: 24,
+  },
+  pens: [
+    { name: "Black pen", colour: "#1b1b1b" },
+    { name: "Blue pen", colour: "#1f3f8f" },
+  ],
 };
 
 const MACHINE_KEYS = ["bed", "machine"]; // what "Reset to defaults" in Settings covers
@@ -41,6 +51,8 @@ const state = {
   pageIndex: 0,
   stageStale: false, // job settings changed since what the stage is showing
   lastRun: null,     // the payload of the running job, for a "run anyway" retry
+  penDocs: [null, null],   // uploaded document path per pen
+  notebookPreview: null,   // the page currently on the stage
   penKnown: false,   // false until something has actually driven the servo
 };
 
@@ -158,6 +170,8 @@ function loadSettings() {
     if (saved[key] && typeof saved[key] === "object") Object.assign(state[key], saved[key]);
   }
   if (saved.stepMm) state.stepMm = saved.stepMm;
+  if (saved.notebook && typeof saved.notebook === "object") Object.assign(state.notebook, saved.notebook);
+  if (Array.isArray(saved.pens) && saved.pens.length === state.pens.length) state.pens = saved.pens;
   if (typeof saved.text === "string" && saved.text && $("textInput")) {
     $("textInput").value = saved.text;
   }
@@ -168,6 +182,7 @@ function saveSettings() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       bed: state.bed, page: state.page, origin: state.origin,
       style: state.style, machine: state.machine, hand: state.hand, stepMm: state.stepMm,
+      notebook: state.notebook, pens: state.pens,
       // the letter itself is the one thing a refresh used to throw away
       text: $("textInput") ? $("textInput").value : "",
     }));
@@ -217,6 +232,17 @@ function applyStateToForm() {
   $("invertX").checked = state.machine.invertX;
   $("swapPen").checked = state.machine.swapPen;
   $("stepSize").value = state.stepMm;
+  $("nbPageW").value = state.notebook.pageWidthMm;
+  $("nbPageH").value = state.notebook.pageHeightMm;
+  $("nbMarginL").value = state.notebook.marginLeftMm;
+  $("nbMarginR").value = state.notebook.marginRightMm;
+  $("nbFirstLine").value = state.notebook.firstLineMm;
+  $("nbSpacing").value = state.notebook.lineSpacingMm;
+  $("nbLines").value = state.notebook.linesPerPage;
+  state.pens.forEach((pen, i) => {
+    $("penName" + i).value = pen.name;
+    $("penColour" + i).value = pen.colour;
+  });
   syncPagePreset();
 }
 
@@ -246,6 +272,17 @@ function readFormIntoState() {
   state.hand.enabled = $("handEnabled").checked;
   state.hand.amount = parseFloat($("handAmount").value) || 1;
   state.stepMm = $("stepSize").value;
+  state.notebook.pageWidthMm = num("nbPageW");
+  state.notebook.pageHeightMm = num("nbPageH");
+  state.notebook.marginLeftMm = num("nbMarginL");
+  state.notebook.marginRightMm = num("nbMarginR");
+  state.notebook.firstLineMm = num("nbFirstLine");
+  state.notebook.lineSpacingMm = num("nbSpacing");
+  state.notebook.linesPerPage = Math.max(1, Math.round(num("nbLines")));
+  state.pens = state.pens.map((pen, i) => ({
+    name: $("penName" + i).value || `Pen ${i + 1}`,
+    colour: $("penColour" + i).value || pen.colour,
+  }));
 }
 
 const HAND_AMOUNT_LABELS = [
@@ -400,6 +437,11 @@ function refreshLayout() {
 
 /** Show page `i` of a multi-page preview or simulation. */
 function showPage(i) {
+  if (state.inputMode === "notebook" && state.notebookPreview) {
+    const count = state.notebookPreview.pageCount;
+    doNotebookPreview(Math.max(0, Math.min(count - 1, i)));
+    return;
+  }
   if (!state.pages || !state.pages.length) return;
   state.pageIndex = Math.max(0, Math.min(state.pages.length - 1, i));
   const page = state.pages[state.pageIndex];
@@ -524,6 +566,112 @@ async function doPreview() {
   } catch (e) {
     log("Preview failed: " + e.message, "warn");
   }
+}
+
+// -------------------------------------------------------------- notebook --
+
+function notebookJobPayload(page) {
+  readFormIntoState();
+  return {
+    passes: state.pens.map((pen, i) => ({
+      name: pen.name, colour: pen.colour, docPath: state.penDocs[i],
+    })).filter((p) => p.docPath),
+    notebook: { ...state.notebook },
+    style: currentStylePayload(),
+    hand: currentHandPayload(),
+    page,
+  };
+}
+
+async function doNotebookPreview(page = 0) {
+  const payload = notebookJobPayload(page);
+  if (!payload.passes.length) {
+    log("Choose a document for at least one pen first.", "warn");
+    return;
+  }
+  $("stageTitle").textContent = "Notebook";
+  $("stageHint").textContent = "The page as it will be written - nothing is sent anywhere.";
+  stopPlayback();
+  state.playback = null;
+  try {
+    const r = await fetch("/api/notebook/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) throw new Error(await errorText(r));
+    const data = await r.json();
+    state.notebookPreview = data;
+    state.pages = new Array(data.pageCount);   // so the pager knows how many there are
+    state.pageIndex = data.pageIndex;
+    markStageFresh("Notebook");
+    drawNotebookPage(data);
+    syncPager();
+    $("pageLabel").textContent =
+      `page ${data.pageIndex + 1} of ${data.pageCount} \u00b7 lines ${data.firstLineNo}-${data.lastLineNo}`;
+
+    const legend = data.passes.map((p) =>
+      `<span><span class="sw" style="background:${p.colour}"></span>${p.name}: ${p.writtenLines} lines</span>`).join("");
+    $("penLegend").hidden = false;
+    $("penLegend").innerHTML = legend;
+
+    $("warnBox").hidden = !(data.warnings && data.warnings.length);
+    if (data.warnings && data.warnings.length) $("warnBox").textContent = data.warnings.join(" ");
+
+    if (page === 0) {
+      const totals = data.totals.map((t) => `${t.name} ${t.lines}`).join(", ");
+      log(`Notebook: ${data.pageCount} pages at ${data.linesPerPage} lines each, `
+          + `${data.fontSizeMm}mm writing. Lines per pen: ${totals}.`, "ok");
+      (data.warnings || []).forEach((w) => log(w, "warn"));
+    }
+  } catch (e) {
+    log("Notebook preview failed: " + e.message, "warn");
+  }
+}
+
+/** Draw one notebook page: the rules and margin it will be written on, then
+ *  each pen's lines in its own colour. Seeing the writing sit on the printed
+ *  rules is the only way to check the measurements before using real ink. */
+function drawNotebookPage(data) {
+  const canvas = $("stageCanvas");
+  const ctx = prepareCanvas(canvas, data.pageWidthMm, data.pageHeightMm);
+  const { sx, sy, cssWidth, style } = ctx.scaleToPage;
+
+  // the printed ruling
+  ctx.save();
+  ctx.strokeStyle = style.getPropertyValue("--paper-edge").trim() || "#ccd";
+  ctx.lineWidth = 0.6;
+  for (let i = 0; i < data.linesPerPage; i++) {
+    const y = (data.firstLineMm + i * data.lineSpacingMm) * sy;
+    ctx.beginPath();
+    ctx.moveTo(data.marginLeftMm * sx * 0.4, y);
+    ctx.lineTo(cssWidth - data.marginRightMm * sx * 0.4, y);
+    ctx.stroke();
+  }
+  // the margin line
+  ctx.strokeStyle = "rgba(200,80,80,0.35)";
+  ctx.beginPath();
+  ctx.moveTo(data.marginLeftMm * sx, 0);
+  ctx.lineTo(data.marginLeftMm * sx, ctx.scaleToPage.cssHeight);
+  ctx.stroke();
+  ctx.restore();
+
+  // the writing, one colour per pen
+  ctx.lineWidth = 1;
+  data.passes.forEach((pen) => {
+    ctx.strokeStyle = pen.colour;
+    pen.strokes.forEach((stroke) => {
+      if (stroke.length < 2) return;
+      ctx.beginPath();
+      ctx.moveTo(stroke[0][0] * sx, stroke[0][1] * sy);
+      for (let i = 1; i < stroke.length; i++) ctx.lineTo(stroke[i][0] * sx, stroke[i][1] * sy);
+      ctx.stroke();
+    });
+  });
+
+  state.lastPreview = null;  // the notebook page redraws itself from its data
+  $("transport").hidden = true;
+  $("readout").hidden = true;
 }
 
 // -------------------------------------------------------------- simulate --
@@ -908,10 +1056,26 @@ function handleWsMessage(msg) {
       break;
     case "pageWait":
       $("paperPrompt").hidden = false;
+      $("nextPageBtn").textContent = msg.notebook
+        ? "Page turned - write the next one"
+        : "Sheet loaded - plot the next page";
+      $("paperPromptText").textContent = msg.notebook
+        ? `Page ${msg.page} of ${msg.totalPages} is written. Turn to the next page, leaving the `
+          + "notebook exactly where it is - every page is written from the same zero."
+        : `Page ${msg.page} of ${msg.totalPages} is done. Take that sheet off, load a fresh one `
+          + "against the same zero, then continue. Every page is drawn from the same origin.";
+      log(`Page ${msg.page} of ${msg.totalPages} finished - waiting for you.`, "ok");
+      break;
+    case "penChange":
+      $("paperPrompt").hidden = false;
+      $("nextPageBtn").textContent = "Pen is in - carry on";
       $("paperPromptText").textContent =
-        `Page ${msg.page} of ${msg.totalPages} is done. Take that sheet off, load a fresh one `
-        + "against the same zero, then continue. Every page is drawn from the same origin.";
-      log(`Page ${msg.page} of ${msg.totalPages} finished - waiting for a fresh sheet.`, "ok");
+        `Put the ${msg.pen} in the holder for page ${msg.page} of ${msg.totalPages}, `
+        + "seat it at the same height as before, then continue.";
+      log(`Waiting for you to fit the ${msg.pen}.`, "ok");
+      break;
+    case "passComplete":
+      log(`${msg.pen}: ${msg.lines} line(s) written on page ${msg.page}.`, "ok");
       break;
     case "boundsBlocked": {
       const lines = msg.warnings.slice(0, 6).join("; ");
@@ -961,9 +1125,9 @@ function handleWsMessage(msg) {
       $("rLines").textContent = `${msg.line} / ${msg.totalLines}`;
       const pct = msg.totalLines ? Math.round((msg.line / msg.totalLines) * 100) : 0;
       $("runBar").style.width = pct + "%";
-      $("runLabel").textContent = msg.totalPages > 1
-        ? `page ${msg.page}/${msg.totalPages} - ${pct}%`
-        : `${pct}%`;
+      $("runLabel").textContent = msg.pen
+        ? `${msg.pen} - page ${msg.page}/${msg.totalPages} - ${pct}%`
+        : (msg.totalPages > 1 ? `page ${msg.page}/${msg.totalPages} - ${pct}%` : `${pct}%`);
       break;
     }
     case "pageComplete":
@@ -1013,6 +1177,11 @@ function wireStaticControls() {
       $("textPane").hidden = state.inputMode !== "text";
       $("filePane").hidden = state.inputMode !== "file";
       $("svgPane").hidden = state.inputMode !== "svg";
+      $("notebookPane").hidden = state.inputMode !== "notebook";
+      $("simulateBtn").disabled = state.inputMode === "notebook";
+      $("simulateBtn").title = state.inputMode === "notebook"
+        ? "Simulate is for single sheets - use Preview to check the notebook page"
+        : "";
     });
   });
 
@@ -1063,8 +1232,8 @@ function wireStaticControls() {
   $("pageNext").addEventListener("click", () => showPage(state.pageIndex + 1));
   $("nextPageBtn").addEventListener("click", () => {
     $("paperPrompt").hidden = true;
-    wsAction({ action: "nextPage" });
-    log("Continuing with the next page.", "ok");
+    wsAction({ action: "continueJob" });
+    log("Carrying on.", "ok");
   });
   $("stopHereBtn").addEventListener("click", () => {
     $("paperPrompt").hidden = true;
@@ -1078,7 +1247,20 @@ function wireStaticControls() {
 
   $("textInput").addEventListener("input", () => { markStageStale(); saveSettings(); });
 
-  $("previewBtn").addEventListener("click", doPreview);
+  [0, 1].forEach((i) => {
+    $("penFile" + i).addEventListener("change", (e) => uploadPenDoc(e.target.files[0], i));
+    $("penName" + i).addEventListener("input", () => { refreshLayout(); syncPenLegend(); });
+    $("penColour" + i).addEventListener("input", () => {
+      refreshLayout();
+      if (state.notebookPreview) doNotebookPreview(state.pageIndex);
+    });
+  });
+  ["nbPageW", "nbPageH", "nbMarginL", "nbMarginR", "nbFirstLine", "nbSpacing", "nbLines"]
+    .forEach((id) => $(id).addEventListener("input", refreshLayout));
+
+  $("previewBtn").addEventListener("click", () => {
+    if (state.inputMode === "notebook") doNotebookPreview(0); else doPreview();
+  });
   $("simulateBtn").addEventListener("click", doSimulate);
   $("clearLogBtn").addEventListener("click", () => { $("logBox").innerHTML = ""; });
   $("diagBtn").addEventListener("click", saveDiagnostics);
@@ -1174,12 +1356,18 @@ function wireStaticControls() {
   $("runBtn").addEventListener("click", () => {
     readFormIntoState();
     if (state.jobRunning) return;  // the server refuses it too
-    const payload = {
-      action: "run",
-      input: currentInputPayload(), page: currentPagePayload(),
-      style: currentStylePayload(), machine: currentMachinePayload(),
-      hand: currentHandPayload(),
-    };
+    const payload = state.inputMode === "notebook"
+      ? { action: "runNotebook", notebookJob: notebookJobPayload(0), machine: currentMachinePayload() }
+      : {
+          action: "run",
+          input: currentInputPayload(), page: currentPagePayload(),
+          style: currentStylePayload(), machine: currentMachinePayload(),
+          hand: currentHandPayload(),
+        };
+    if (payload.action === "runNotebook" && !payload.notebookJob.passes.length) {
+      log("Choose a document for at least one pen first.", "warn");
+      return;
+    }
     state.lastRun = payload;
     $("runBtn").disabled = true;   // until the server confirms the job started
     wsAction(payload);
@@ -1252,6 +1440,30 @@ function wsAction(payload) {
   if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(payload));
 }
 
+/** Upload one pen's document and remember its path for the notebook job. */
+async function uploadPenDoc(file, index) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch("/api/upload", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await errorText(r));
+    const data = await r.json();
+    state.penDocs[index] = data.path;
+    $("penFileName" + index).textContent = file.name;
+    log(`${state.pens[index].name}: loaded ${file.name}.`, "ok");
+  } catch (e) {
+    log(`Could not upload ${file.name}: ${e.message}`, "warn");
+  }
+}
+
+function syncPenLegend() {
+  if (!state.notebookPreview) return;
+  const legend = state.notebookPreview.passes.map((p, i) =>
+    `<span><span class="sw" style="background:${state.pens[i].colour}"></span>${state.pens[i].name}</span>`).join("");
+  $("penLegend").innerHTML = legend;
+}
+
 async function uploadFile(file, kind) {
   if (!file) return;
   const fd = new FormData();
@@ -1277,7 +1489,8 @@ async function uploadFile(file, kind) {
 function redrawStage() {
   // state.playback is cleared by a Preview - without that, a window resize
   // replaced the preview on screen with the previous simulation.
-  if (state.playback) renderPlaybackFrame(state.playback.simTime);
+  if (state.inputMode === "notebook" && state.notebookPreview) drawNotebookPage(state.notebookPreview);
+  else if (state.playback) renderPlaybackFrame(state.playback.simTime);
   else if (state.lastPreview) {
     const { strokes, pageWmm, pageHmm } = state.lastPreview;
     drawStaticStrokes(strokes, pageWmm, pageHmm);

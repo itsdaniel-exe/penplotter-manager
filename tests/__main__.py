@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from . import _harness, test_calibration, test_console, test_formatting, test_inputs
+from . import (_harness, test_calibration, test_console, test_formatting, test_inputs,
+               test_notebook)
 
 if __name__ == "__main__":
     print("=== machine calibration ===\n")
@@ -32,6 +33,16 @@ if __name__ == "__main__":
         test_inputs.test_bad_sizes_say_which_field_is_wrong,
         test_inputs.test_svg_paths,
         test_inputs.test_svg_document,
+    ])
+    print("=== notebook (ruled pages, several pens) ===\n")
+    _harness.run([
+        test_notebook.test_passes_stay_aligned,
+        test_notebook.test_baselines_land_on_the_ruled_lines,
+        test_notebook.test_pagination_is_by_line_count,
+        test_notebook.test_wrapping_keeps_every_pass_in_step,
+        test_notebook.test_size_is_chosen_to_fit_the_ruling_and_the_width,
+        test_notebook.test_impossible_notebooks_are_refused,
+        test_notebook.test_a_page_is_reproducible,
     ])
     print("=== console job runner ===\n")
     _harness.run([
