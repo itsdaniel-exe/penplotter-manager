@@ -653,6 +653,9 @@ def _release_port_ownership(session: Session) -> None:
 def _run_job_blocking(session: Session, machine: MachineConfig, pages, page: PageConfig, q: queue.Queue):
     streamer = session.streamer
     total_pages = len(pages)
+    # A previous cancel leaves the stop flag set; without clearing it the new
+    # job stops itself before it has drawn anything.
+    streamer.begin_job()
     # This machine lifts with M03 (swap_pen), so the streamer has to be told
     # which command means down or its live pen readout runs inverted.
     streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
@@ -799,6 +802,9 @@ def _run_notebook_blocking(session: Session, machine: MachineConfig,
     move, and the pen has to go back into the holder at the same height.
     """
     streamer = session.streamer
+    # A cancelled job leaves the stop flag set, and the first thing this runner
+    # does is wait for the operator to fit a pen - which checks that flag.
+    streamer.begin_job()
     streamer.set_pen_mapping(machine.pen_up_cmd_value, machine.pen_down_cmd_value)
     total_pages = len(pages)
 

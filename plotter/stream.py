@@ -253,6 +253,17 @@ class GrblStreamer:
         if self._ser:
             self._ser.write(b"~")
 
+    def begin_job(self) -> None:
+        """Clear the stop and hold flags before a new job starts.
+
+        A cancelled job leaves `_cancel` set. stream() clears it, but the
+        notebook runner asks the operator to fit a pen *before* it streams
+        anything, and that wait checks the flag - so the next job cancelled
+        itself the instant it started, with nothing in the log to explain why.
+        """
+        self._cancel = False
+        self._paused = False
+
     def cancel(self):
         """Stop after the moves GRBL has already accepted. Deliberately not a
         soft reset: that also wipes the G92 zero, and with no limit switches

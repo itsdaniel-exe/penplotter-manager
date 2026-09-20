@@ -128,7 +128,7 @@ def test_uploaded_paths_are_confined_to_the_uploads_folder():
     check("nothing supplied stays None", srv._safe_upload_path(None) is None)
 
 
-def _run_notebook(order: str) -> list[dict]:
+def _run_notebook(order: str, cancelled_before: bool = False) -> list[dict]:
     """Run a small two-pen notebook job, answering every prompt immediately,
     and return the messages the console would have received."""
     from plotter.notebook import NotebookConfig, PenPass, build_notebook_pages
@@ -143,6 +143,8 @@ def _run_notebook(order: str) -> list[dict]:
 
     session = srv.Session()
     session.streamer = GrblStreamer(port="FAKE", transport=RecordingPort())
+    if cancelled_before:
+        session.streamer.cancel()   # as if the operator had stopped the last job
     q: queue.Queue = queue.Queue()
 
     worker = threading.Thread(
@@ -206,6 +208,32 @@ def test_pen_order_takes_one_pen_through_the_whole_notebook():
           written == [("A", 1), ("A", 3), ("B", 1), ("B", 2), ("B", 3)], str(written))
 
 
+def test_a_cancelled_job_does_not_poison_the_next_one():
+    """Cancelling leaves the stop flag set. A normal run clears it when it
+    starts streaming, but a notebook run waits for a pen to be fitted first -
+    and that wait checks the flag, so the next job cancelled itself one second
+    after starting, with nothing in the log to explain why."""
+    print("starting again after a cancel")
+
+    for order in ("page", "pen"):
+        seen = _run_notebook(order, cancelled_before=True)
+        done = [m for m in seen if m["type"] == "jobComplete"]
+        check(f"[{order}] the new job runs instead of cancelling itself",
+              bool(done) and not done[-1]["cancelled"], str(done))
+        check(f"[{order}] and it actually writes something",
+              any(m["type"] == "passComplete" for m in seen),
+              str([m["type"] for m in seen][:6]))
+
+    # the same flag stopped a plain single-sheet job from pausing properly
+    s = GrblStreamer(port="FAKE", transport=RecordingPort())
+    s.cancel()
+    s.pause()
+    s.begin_job()
+    check("begin_job clears both the stop and the hold",
+          s.is_cancelled is False and s.is_paused is False,
+          f"cancelled={s.is_cancelled} paused={s.is_paused}")
+
+
 def test_the_cost_of_each_order_is_reported():
     """The console shows this before the job starts, so the choice is informed."""
     print("what each order costs the operator")
@@ -233,6 +261,7 @@ def main() -> int:
          test_uploaded_paths_are_confined_to_the_uploads_folder,
          test_page_order_finishes_each_page_before_turning,
          test_pen_order_takes_one_pen_through_the_whole_notebook,
+         test_a_cancelled_job_does_not_poison_the_next_one,
          test_the_cost_of_each_order_is_reported])
     return report()
 
